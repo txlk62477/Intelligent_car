@@ -1,0 +1,11 @@
+http_video_publisher:
+  ros__parameters:
+    url: "http://192.168.31.188:81/"
+    topic: "/camera/image_raw/compressed"
+    raw_topic: "/camera/image_raw"
+    frame_id: "camera_link"
+    fps: 20.0
+    reconnect_delay: 2.0
+    use_ffmpeg: true
+    jpeg_quality: 70
+    publish_raw: false

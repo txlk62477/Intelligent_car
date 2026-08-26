@@ -1,0 +1,17 @@
+camsense_lidar_node:
+  ros__parameters:
+    port: /dev/lidar
+    frame_id: laser_frame
+    baudrate: 115200
+    angle_max: 180.0
+    angle_min: -180.0
+    angle_increment: 1.0
+    range_max: 12.0
+    range_min: 0.1
+    frequency: 10.0
+    auto_reconnect: true
+    invalid_range_is_inf: false
+
+    # Camsense protocol/body calibration.
+    center_base_angle: 198.5
+    clockwise: true

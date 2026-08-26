@@ -1,0 +1,34 @@
+mavlink_bridge:
+  ros__parameters:
+    port: "ttyUSB0"
+    baudrate: 921600
+
+    imu_topic: "/imu"
+    odom_topic: "/odom"
+    scan_topic: "/scan"
+    cmd_vel_topic: "/cmd_vel"
+
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    imu_frame_id: "imu_link"
+    scan_frame_id: "laser_frame"
+
+    reconnect_interval_ms: 1000
+    scan_time: 0.1
+
+    # Leap Low v1 publishes MAVLink odometry pose in local FLU and twist in body FRD.
+    convert_odom_twist_frd_to_flu: true
+
+    # MAVLink IMU body vectors conventionally use FRD axes; ROS base/imu frames use FLU.
+    convert_imu_frd_to_flu: true
+
+    # OBSTACLE_DISTANCE bins are clockwise from front; LaserScan angles are CCW.
+    reorder_scan_to_ros_angles: true
+
+    # ROS cmd_vel linear.y uses body FLU; MAVLink body lateral velocity uses FRD.
+    convert_cmd_vel_flu_to_frd: true
+
+    source_system_id: 255
+    source_component_id: 190
+    target_system_id: 1
+    target_component_id: 1
