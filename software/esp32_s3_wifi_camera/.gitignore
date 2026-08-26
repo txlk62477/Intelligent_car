@@ -1,4 +1,0 @@
-build/
-managed_components/*/.git/
-managed_components/*/.github/
-managed_components/*/.gitignore

@@ -21,4 +21,9 @@ bin-release/
 __pycache__/
 *.pyc
 
+# colcon workspace outputs
+/build/
+/install/
+/log/
+
 .vscode/
