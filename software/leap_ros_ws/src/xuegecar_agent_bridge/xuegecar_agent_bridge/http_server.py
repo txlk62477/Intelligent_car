@@ -1,0 +1,142 @@
+"""Robot Gateway 的小型 JSON/HTTP seam。"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import re
+from threading import Thread
+from typing import Any
+
+from xuegecar_agent_bridge.controller import MotionRejected
+
+
+MAX_BODY_BYTES = 64 * 1024
+# operation_id 只能占据最后一个路径段，避免把额外的子路径误当成动作 ID。
+OPERATION_PATH = re.compile(r"^/v1/motions/([^/]+)$")
+
+
+class GatewayHttpServer:
+    """在后台线程运行的依赖最小 HTTP Adapter。"""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        status: Callable[[], dict[str, Any]],
+        operation: Callable[[str], dict[str, Any] | None],
+        submit: Callable[[dict[str, Any]], dict[str, Any]],
+        stop: Callable[[], dict[str, Any]],
+    ) -> None:
+        # Handler 通过闭包持有这些业务回调。HTTP 层只处理协议，不依赖 ROS2。
+        handler = _handler_factory(
+            status=status,
+            operation=operation,
+            submit=submit,
+            stop=stop,
+        )
+        # 每个 HTTP 请求可由独立线程处理；真正的运动状态由 node.py 负责同步。
+        self._server = ThreadingHTTPServer((host, port), handler)
+        self._thread = Thread(
+            target=self._server.serve_forever,
+            name="xuegecar-agent-http",
+            daemon=True,
+        )
+
+    @property
+    def address(self) -> tuple[str, int]:
+        """返回实际监听地址，测试时端口可设为 0。"""
+
+        host, port = self._server.server_address[:2]
+        return str(host), int(port)
+
+    def start(self) -> None:
+        """启动后台 HTTP 线程。"""
+
+        self._thread.start()
+
+    def close(self) -> None:
+        """停止服务器并等待后台线程退出。"""
+
+        self._server.shutdown()
+        self._server.server_close()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+
+def _handler_factory(
+    *,
+    status: Callable[[], dict[str, Any]],
+    operation: Callable[[str], dict[str, Any] | None],
+    submit: Callable[[dict[str, Any]], dict[str, Any]],
+    stop: Callable[[], dict[str, Any]],
+) -> type[BaseHTTPRequestHandler]:
+    # 工厂把节点提供的回调封装进 Handler 类，避免使用全局节点对象。
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "XuegecarAgentGateway/0.1"
+
+        def do_GET(self) -> None:  # noqa: N802
+            # 查询接口只读取节点维护的快照，不直接访问 ROS2 控制器。
+            if self.path == "/v1/robot/status":
+                self._write_json(200, status())
+                return
+            match = OPERATION_PATH.fullmatch(self.path)
+            if match:
+                result = operation(match.group(1))
+                if result is None:
+                    self._write_json(404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"})
+                else:
+                    self._write_json(200, result)
+                return
+            self._write_json(404, {"error_code": "NOT_FOUND", "error": "接口不存在"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            try:
+                if self.path == "/v1/motions":
+                    # 读取 Agent 的动作 JSON，再通过 submit 回调交给 ROS2 节点。
+                    # 202 表示动作已被接受，最终结果仍需通过 GET 接口轮询。
+                    self._write_json(202, submit(self._read_json()))
+                    return
+                if self.path == "/v1/stop":
+                    # 停车也走节点回调，以保证取消动作与发布零速度在 ROS 主线程处理。
+                    self._write_json(200, stop())
+                    return
+                self._write_json(404, {"error_code": "NOT_FOUND", "error": "接口不存在"})
+            except MotionRejected as error:
+                # 冲突类错误使用 409，其他确定性动作校验错误使用 422。
+                status_code = 409 if error.code in {"BUSY", "ID_CONFLICT"} else 422
+                self._write_json(status_code, {"error_code": error.code, "error": str(error)})
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+                self._write_json(400, {"error_code": "INVALID_JSON", "error": str(error)})
+            except TimeoutError as error:
+                self._write_json(503, {"error_code": "GATEWAY_TIMEOUT", "error": str(error)})
+
+        def _read_json(self) -> dict[str, Any]:
+            # 先校验长度再读取请求体，防止无界输入占用过多内存。
+            raw_length = self.headers.get("Content-Length")
+            if raw_length is None:
+                raise ValueError("缺少 Content-Length")
+            length = int(raw_length)
+            if length <= 0 or length > MAX_BODY_BYTES:
+                raise ValueError("请求体大小无效")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("JSON 顶层必须是对象")
+            return payload
+
+        def _write_json(self, status_code: int, payload: dict[str, Any]) -> None:
+            # HTTP 回复统一为 UTF-8 JSON；wfile.write() 才是真正把正文发回 Agent。
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            # 关闭 BaseHTTPRequestHandler 默认写入 stderr 的逐请求日志。
+            return
+
+    return Handler

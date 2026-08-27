@@ -1,0 +1,115 @@
+"""测试专用 Fake：内存版 Robot Gateway 与可编程 Chat Model。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage
+
+from agent.common.robot_gateway import RobotGatewayError
+
+
+class FakeRobotGateway:
+    """记录调用、可编程响应序列的内存 Gateway。"""
+
+    def __init__(
+        self,
+        submit_results: list[dict[str, Any]] | None = None,
+        poll_scripts: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.submitted: list[dict[str, Any]] = []
+        self.stop_calls = 0
+        self.status_calls = 0
+        self._submit_results = list(submit_results or [])
+        self._poll_scripts = {
+            key: list(value) for key, value in (poll_scripts or {}).items()
+        }
+        self._records: dict[str, dict[str, Any]] = {}
+
+    def get_status(self) -> dict[str, Any]:
+        self.status_calls += 1
+        return {
+            "online": True,
+            "gateway_status": "IDLE",
+            "pose": None,
+            "velocity": None,
+        }
+
+    def submit_motion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """幂等提交：同一 operation_id 直接返回已有记录。"""
+
+        operation_id = str(payload["operation_id"])
+        previous = self._records.get(operation_id)
+        if previous is not None:
+            return previous
+        self.submitted.append(payload)
+        if self._submit_results:
+            record = {**payload, **dict(self._submit_results.pop(0))}
+        else:
+            record = {**payload, "status": "RUNNING"}
+        self._records[operation_id] = record
+        return record
+
+    def get_motion(self, operation_id: str) -> dict[str, Any]:
+        """按脚本逐次推进状态，脚本耗尽后保持最后状态。"""
+
+        record = self._records.get(operation_id)
+        if record is None:
+            raise RobotGatewayError("NOT_FOUND", "未知 operation_id")
+        script = self._poll_scripts.get(operation_id)
+        if script:
+            record.update(dict(script.pop(0)))
+        return record
+
+    def stop(self) -> dict[str, Any]:
+        self.stop_calls += 1
+        for record in self._records.values():
+            if record.get("status") == "RUNNING":
+                record.update(
+                    {
+                        "status": "CANCELLED",
+                        "error_code": "CANCELLED",
+                        "error": "收到停止请求",
+                    }
+                )
+        return {"gateway_status": "IDLE"}
+
+
+class FailingRobotGateway(FakeRobotGateway):
+    """提交成功但后续查询持续失败的 Gateway。"""
+
+    def get_motion(self, operation_id: str) -> dict[str, Any]:
+        raise RobotGatewayError("UNAVAILABLE", "Robot Gateway 不可用")
+
+
+class FakeChatModel:
+    """按队列返回预置消息的可编程 Chat Model。"""
+
+    def __init__(self, responses: list[BaseMessage] | None = None) -> None:
+        self._responses = list(responses or [])
+        self.calls: list[list[BaseMessage]] = []
+        self.bound_tools: list[Any] = []
+
+    def bind_tools(
+        self,
+        tools: list[Any],
+        *,
+        parallel_tool_calls: bool = False,
+    ) -> FakeChatModel:
+        self.bound_tools = list(tools)
+        return self
+
+    async def ainvoke(self, messages: list[BaseMessage]) -> BaseMessage:
+        self.calls.append(list(messages))
+        if not self._responses:
+            return AIMessage(content="（没有更多预设回复）")
+        return self._responses.pop(0)
+
+
+def tool_call_ai(name: str, args: dict[str, Any], call_id: str = "call-1") -> AIMessage:
+    """构造携带单个 tool_call 的 AIMessage。"""
+
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": call_id, "type": "tool_call"}],
+    )

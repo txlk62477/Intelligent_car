@@ -1,0 +1,27 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Python and LangGraph local state
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.langgraph_api/
+build/
+dist/
+.coverage
+.coverage.*
+
+# Local runtime output
+artifacts/
+*.log
+.DS_Store
