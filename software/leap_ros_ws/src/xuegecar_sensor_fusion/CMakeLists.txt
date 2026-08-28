@@ -10,6 +10,7 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_library(sensor_gate src/sensor_gate.cpp)
 target_compile_features(sensor_gate PUBLIC cxx_std_17)
@@ -24,7 +25,8 @@ ament_target_dependencies(sensor_gate_node
   diagnostic_msgs
   nav_msgs
   rclcpp
-  sensor_msgs)
+  sensor_msgs
+  std_msgs)
 
 install(TARGETS sensor_gate sensor_gate_node
   ARCHIVE DESTINATION lib

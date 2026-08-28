@@ -38,27 +38,49 @@ private:
   double previous_time_{0.0};
 };
 
-struct StationaryDetectorConfig
+enum class MotionPhase : std::uint8_t
 {
-  double max_abs_linear_velocity{0.0};
-  double max_abs_angular_velocity{0.0};
-  double hold_duration{0.0};
+  kStationary,
+  kStraight,
+  kTurning,
+  kArc,
 };
 
-class StationaryDetector
+struct MotionStateMachineConfig
+{
+  // 静止判定：两个速度都低于阈值并持续 hold 时长才进入静止。
+  double stationary_max_abs_linear_velocity{0.0};
+  double stationary_max_abs_angular_velocity{0.0};
+  double stationary_hold_duration{0.0};
+  // 转弯带判定：|wz| 进入/退出阈值不同（迟滞），各自需要持续时长。
+  double turn_enter_angular_velocity_threshold{0.0};
+  double turn_exit_angular_velocity_threshold{0.0};
+  double enter_hold_duration{0.0};
+  double exit_hold_duration{0.0};
+  // 弧线与原地转弯的区别：|vx| 是否超过阈值（同样带迟滞）。
+  double arc_min_abs_linear_velocity{0.0};
+  double arc_exit_abs_linear_velocity{0.0};
+};
+
+class MotionStateMachine
 {
 public:
-  explicit StationaryDetector(const StationaryDetectorConfig & config);
+  explicit MotionStateMachine(const MotionStateMachineConfig & config);
 
-  bool update(double linear_velocity, double angular_velocity, double timestamp_seconds);
+  MotionPhase update(
+    double linear_velocity, double angular_velocity, double timestamp_seconds);
+  MotionPhase phase() const;
   void reset();
 
 private:
-  StationaryDetectorConfig config_;
+  MotionPhase classify(double linear_velocity, double angular_velocity) const;
+  double hold_duration_for(MotionPhase from, MotionPhase to) const;
+
+  MotionStateMachineConfig config_;
+  MotionPhase phase_{MotionPhase::kStraight};
   bool candidate_{false};
-  bool stationary_{false};
+  MotionPhase candidate_target_{MotionPhase::kStraight};
   double candidate_start_time_{0.0};
-  double previous_time_{0.0};
 };
 
 }  // namespace xuegecar_sensor_fusion

@@ -27,6 +27,19 @@ sensor_gate_node:
     stationary_angular_velocity_threshold: 0.01   # rad/s
     stationary_hold_duration: 0.2                 # s
 
+    # 运动相位状态机（静止/直行/原地转弯/弧线）切换参数，带迟滞防抖。
+    # 直行时轮式角速度 stddev=0.04，轮式:陀螺权重约 4:1；原地转弯时放大到
+    # turn_odom_wz_stddev=0.16，权重反转为 1:4（打滑时轮式角速度不可靠）；
+    # 弧线时取 0.08，权重 1:1。
+    turn_enter_angular_velocity_threshold: 0.15   # rad/s，|wz| 达到并持续才进入转弯带
+    turn_exit_angular_velocity_threshold: 0.10    # rad/s，|wz| 低于并持续才退出转弯带
+    enter_hold_duration: 0.1                      # s，进入转弯带需持续时长
+    exit_hold_duration: 0.2                       # s，退出转弯带需持续时长
+    arc_min_abs_linear_velocity: 0.05             # m/s，|vx| 达到即弧线而非原地转弯
+    arc_exit_abs_linear_velocity: 0.03            # m/s，弧线退出迟滞
+    turn_odom_wz_stddev: 0.16                     # rad/s，原地转弯时轮式角速度置信度
+    arc_odom_wz_stddev: 0.08                      # rad/s，弧线时轮式角速度置信度
+
     # MCU header.stamp 存在跳变，输出改用每次回调时真正的主机 ROS 接收时间。
     # 若主机时间发生回拨，由 EKF 的 reset_on_time_jump 清空状态并重建时间轴。
     retimestamp_with_receipt_time: true

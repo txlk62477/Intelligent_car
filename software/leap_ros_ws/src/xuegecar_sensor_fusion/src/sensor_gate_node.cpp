@@ -6,6 +6,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -52,6 +53,21 @@ std::int64_t stamp_nanoseconds(const builtin_interfaces::msg::Time & stamp)
          static_cast<std::int64_t>(stamp.nanosec);
 }
 
+const char * motion_phase_name(const MotionPhase phase)
+{
+  switch (phase) {
+    case MotionPhase::kStationary:
+      return "stationary";
+    case MotionPhase::kStraight:
+      return "straight";
+    case MotionPhase::kTurning:
+      return "turning";
+    case MotionPhase::kArc:
+      return "arc";
+  }
+  return "unknown";
+}
+
 }  // namespace
 
 class SensorGateNode final : public rclcpp::Node
@@ -63,7 +79,7 @@ public:
     odom_gate_(load_odom_gate_config()),
     odom_angular_gate_(load_odom_angular_gate_config()),
     imu_gate_(load_imu_gate_config()),
-    stationary_detector_(load_stationary_detector_config())
+    motion_state_machine_(load_motion_state_machine_config())
   {
     input_odom_topic_ = declare_parameter<std::string>("input_odom_topic", "/odom");
     input_imu_topic_ = declare_parameter<std::string>("input_imu_topic", "/imu");
@@ -75,6 +91,8 @@ public:
     imu_gyro_z_bias_ = declare_parameter<double>("imu_gyro_z_bias", -0.00942);
     odom_vx_stddev_ = declare_parameter<double>("odom_vx_stddev", 0.02);
     odom_wz_stddev_ = declare_parameter<double>("odom_wz_stddev", 0.04);
+    turn_odom_wz_stddev_ = declare_parameter<double>("turn_odom_wz_stddev", 0.16);
+    arc_odom_wz_stddev_ = declare_parameter<double>("arc_odom_wz_stddev", 0.08);
     imu_gyro_z_stddev_ = declare_parameter<double>("imu_gyro_z_stddev", 0.08);
     retimestamp_with_receipt_time_ =
       declare_parameter<bool>("retimestamp_with_receipt_time", true);
@@ -85,6 +103,8 @@ public:
 
     validate_positive_finite("odom_vx_stddev", odom_vx_stddev_);
     validate_positive_finite("odom_wz_stddev", odom_wz_stddev_);
+    validate_positive_finite("turn_odom_wz_stddev", turn_odom_wz_stddev_);
+    validate_positive_finite("arc_odom_wz_stddev", arc_odom_wz_stddev_);
     validate_positive_finite("imu_gyro_z_stddev", imu_gyro_z_stddev_);
     validate_positive_finite("max_source_stamp_offset", max_source_stamp_offset_);
     validate_positive_finite("diagnostic_timeout", diagnostic_timeout_);
@@ -99,6 +119,8 @@ public:
       output_imu_topic_, rclcpp::SensorDataQoS());
     diagnostics_publisher_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", rclcpp::QoS(10).reliable());
+    motion_phase_publisher_ = create_publisher<std_msgs::msg::String>(
+      "/fusion/motion_phase", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
 
     odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       input_odom_topic_, odom_qos,
@@ -149,14 +171,27 @@ private:
     return config;
   }
 
-  StationaryDetectorConfig load_stationary_detector_config()
+  MotionStateMachineConfig load_motion_state_machine_config()
   {
-    StationaryDetectorConfig config;
-    config.max_abs_linear_velocity =
+    MotionStateMachineConfig config;
+    config.stationary_max_abs_linear_velocity =
       declare_parameter<double>("stationary_linear_velocity_threshold", 0.005);
-    config.max_abs_angular_velocity =
+    config.stationary_max_abs_angular_velocity =
       declare_parameter<double>("stationary_angular_velocity_threshold", 0.01);
-    config.hold_duration = declare_parameter<double>("stationary_hold_duration", 0.2);
+    config.stationary_hold_duration =
+      declare_parameter<double>("stationary_hold_duration", 0.2);
+    config.turn_enter_angular_velocity_threshold =
+      declare_parameter<double>("turn_enter_angular_velocity_threshold", 0.15);
+    config.turn_exit_angular_velocity_threshold =
+      declare_parameter<double>("turn_exit_angular_velocity_threshold", 0.10);
+    config.enter_hold_duration =
+      declare_parameter<double>("enter_hold_duration", 0.1);
+    config.exit_hold_duration =
+      declare_parameter<double>("exit_hold_duration", 0.2);
+    config.arc_min_abs_linear_velocity =
+      declare_parameter<double>("arc_min_abs_linear_velocity", 0.05);
+    config.arc_exit_abs_linear_velocity =
+      declare_parameter<double>("arc_exit_abs_linear_velocity", 0.03);
     return config;
   }
 
@@ -212,9 +247,10 @@ private:
     }
   }
 
-  void release_stationary_constraint()
+  void release_motion_constraints()
   {
-    stationary_detector_.reset();
+    motion_state_machine_.reset();
+    motion_phase_ = MotionPhase::kStraight;
     stationary_constraint_active_ = false;
   }
 
@@ -236,7 +272,7 @@ private:
         message->header.stamp, receipt_time.nanoseconds(), last_odom_source_stamp_,
         has_last_odom_source_stamp_, odom_counters_))
     {
-      release_stationary_constraint();
+      release_motion_constraints();
       return;
     }
 
@@ -244,19 +280,21 @@ private:
       message->twist.twist.linear.x, receipt_seconds);
     if (linear_result != GateResult::kAccepted) {
       count_rejection(linear_result, odom_counters_);
-      release_stationary_constraint();
+      release_motion_constraints();
       return;
     }
     const GateResult angular_result = odom_angular_gate_.evaluate(
       message->twist.twist.angular.z, receipt_seconds);
     if (angular_result != GateResult::kAccepted) {
       count_rejection(angular_result, odom_counters_);
-      release_stationary_constraint();
+      release_motion_constraints();
       return;
     }
 
-    stationary_constraint_active_ = stationary_detector_.update(
+    const MotionPhase phase = motion_state_machine_.update(
       message->twist.twist.linear.x, message->twist.twist.angular.z, receipt_seconds);
+    motion_phase_ = phase;
+    stationary_constraint_active_ = phase == MotionPhase::kStationary;
 
     auto output = *message;
     if (retimestamp_with_receipt_time_) {
@@ -273,12 +311,24 @@ private:
     }
     output.twist.covariance.fill(0.0);
     output.twist.covariance[0] = odom_vx_stddev_ * odom_vx_stddev_;
-    output.twist.covariance[35] = odom_wz_stddev_ * odom_wz_stddev_;
+    // 运动相位决定轮式角速度的置信度：直行 4:1 信轮式，原地转弯 1:4 信陀螺，
+    // 弧线 1:1 各半（轮子打滑时轮式角速度系统性偏大）。
+    double wz_stddev = odom_wz_stddev_;
+    if (motion_phase_ == MotionPhase::kTurning) {
+      wz_stddev = turn_odom_wz_stddev_;
+    } else if (motion_phase_ == MotionPhase::kArc) {
+      wz_stddev = arc_odom_wz_stddev_;
+    }
+    output.twist.covariance[35] = wz_stddev * wz_stddev;
     for (const std::size_t index : {7U, 14U, 21U, 28U}) {
       output.twist.covariance[index] = kUnusedVariance;
     }
     odom_publisher_->publish(output);
     ++odom_counters_.accepted;
+
+    std_msgs::msg::String phase_message;
+    phase_message.data = motion_phase_name(motion_phase_);
+    motion_phase_publisher_->publish(phase_message);
   }
 
   void handle_imu(const sensor_msgs::msg::Imu::SharedPtr message)
@@ -363,6 +413,7 @@ private:
     add_value(
       odom_status, "stationary_constraint_active",
       stationary_constraint_is_fresh(steady_current_time.seconds()) ? "true" : "false");
+    add_value(odom_status, "motion_phase", motion_phase_name(motion_phase_));
     array.status.push_back(std::move(odom_status));
     array.status.push_back(make_status("imu", imu_counters_, steady_current_time.seconds()));
     diagnostics_publisher_->publish(array);
@@ -372,7 +423,7 @@ private:
   ScalarGate odom_gate_;
   ScalarGate odom_angular_gate_;
   ScalarGate imu_gate_;
-  StationaryDetector stationary_detector_;
+  MotionStateMachine motion_state_machine_;
 
   std::string input_odom_topic_;
   std::string input_imu_topic_;
@@ -381,12 +432,15 @@ private:
   double imu_gyro_z_bias_{0.0};
   double odom_vx_stddev_{0.02};
   double odom_wz_stddev_{0.04};
+  double turn_odom_wz_stddev_{0.16};
+  double arc_odom_wz_stddev_{0.08};
   double imu_gyro_z_stddev_{0.08};
   double max_source_stamp_offset_{0.25};
   double diagnostic_timeout_{0.3};
   bool retimestamp_with_receipt_time_{true};
   bool require_monotonic_stamp_{true};
   bool stationary_constraint_active_{false};
+  MotionPhase motion_phase_{MotionPhase::kStraight};
 
   GateCounters odom_counters_;
   GateCounters imu_counters_;
@@ -397,6 +451,7 @@ private:
 
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motion_phase_publisher_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
