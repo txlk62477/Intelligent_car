@@ -1,0 +1,52 @@
+# xuegecar_sensor_fusion
+
+ROS 2 Jazzy 上位机传感器融合功能包。它保留 MCU 原始 `/odom` 和 `/imu`，先执行宽松的物理硬门控，再由 `robot_localization` EKF 融合轮式前进速度、轮式角速度与 IMU Z 轴角速度。
+
+EKF 的内部运动模型执行预测；轮式 `/odom` 提供 `twist.linear.x` 和
+`twist.angular.z`，IMU 提供 `angular_velocity.z`。两路角速度共同更新 EKF
+中的同一个 `vyaw` 状态，轮式角速度的默认权重约为 IMU 的 4 倍。MCU 已积分的
+`x/y/yaw` 不进入 EKF，融合节点从自身的零原点推算一套独立位姿。
+
+当轮式 `|vx| <= 0.005 m/s` 且 `|angular.z| <= 0.01 rad/s` 连续保持
+`0.2 s`，门控节点将送入 EKF 的两路角速度都置零，抑制静止时 IMU 零偏造成的
+yaw 漂移；检测到轮速超过阈值后立即恢复正常融合。因此，小车被抬起但轮子不转时，
+外部旋转不会计入融合里程计。
+
+## 数据流
+
+```text
+/odom -> sensor_gate_node -> /fusion/odom_valid --+
+                                                   +-> ekf_node -> /odometry/filtered
+/imu  -> sensor_gate_node -> /fusion/imu_valid  --+
+```
+
+`/odometry/filtered` 与原 `/odom` 一样使用 `nav_msgs/msg/Odometry`。第一版是旁路验证模式，不发布 TF，也不修改现有网关话题。
+
+## 启动
+
+```bash
+cd /home/lk/car/software/leap_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch xuegecar_sensor_fusion fusion.launch.py
+```
+
+检查输出：
+
+```bash
+ros2 topic hz /odometry/filtered
+ros2 topic echo /diagnostics
+```
+
+## 参数来源
+
+默认参数来自 `/home/lk/car/data/fusion_calibration_02`：
+
+- 静止 IMU `gyro_z` 零偏约 `-0.00942 rad/s`；
+- `/odom` 与 `/imu` 典型频率约 `50 Hz`；
+- MCU 时间戳存在倒退和秒级跳变，因此默认使用每次回调时真正的主机 ROS
+  接收时间。EKF 开启 `reset_on_time_jump`，主机时间回拨时清空位姿状态并从
+  新时间轴重新计算，避免未来时间戳阻塞实时更新；
+- 马氏拒绝门限按 `fusion_calibration_02` 实测转弯幅度标定：odom `6σ`（覆盖 0.12 m/s）、IMU `10σ`（覆盖 0.8 rad/s）。
+
+所有硬阈值、零偏和标准差都位于 `config/sensor_gate.yaml`，无需修改代码即可重新标定。

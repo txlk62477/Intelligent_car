@@ -61,8 +61,8 @@ class ControllerConfig:
     """运动限制及控制参数。"""
 
     # 基础速度。接近目标时会由 slow_down_ratio 按比例降低。
-    linear_speed: float = 0.10
-    angular_speed: float = 0.40
+    linear_speed: float = 0.27
+    angular_speed: float = 0.53
     # Agent 可提交的距离、持续时间和角度范围。
     min_distance: float = 0.05
     max_distance: float = 3.00
@@ -198,7 +198,10 @@ class MotionController:
         self._validate(command)
         # 没有及时更新的里程计就无法安全进行闭环控制，因此拒绝启动。
         if self._odom is None or now - self._odom.received_at > self.config.odom_timeout:
-            raise MotionRejected("ODOM_TIMEOUT", "没有新鲜的 /odom，拒绝启动")
+            raise MotionRejected(
+                "ODOM_TIMEOUT",
+                "没有新鲜的融合里程计 /odometry/filtered，拒绝启动",
+            )
 
         record = MotionRecord(
             operation_id=command.operation_id,
@@ -256,14 +259,14 @@ class MotionController:
                 MotionStatus.ODOM_TIMEOUT,
                 now,
                 "ODOM_TIMEOUT",
-                "/odom 超过 1 秒未更新",
+                "/odometry/filtered 超过 1 秒未更新",
             )
             return VelocityCommand(0.0, 0.0)
 
         motion_type = MotionType(record.type)
         mode = MotionMode(record.mode)
         if mode is MotionMode.TIME:
-            # 时间模式是开环终止条件，但仍要求 /odom 持续在线作为安全心跳。
+            # 时间模式是开环终止条件，但仍要求融合里程计持续在线作为安全心跳。
             elapsed = now - record.started_at
             record.progress = min(elapsed, record.value)
             if elapsed >= record.value:

@@ -25,3 +25,9 @@ dist/
 artifacts/
 *.log
 .DS_Store
+
+# Local reference repositories
+/references/
+
+# Local experiment data and bags
+/data/

@@ -20,6 +20,14 @@ class MotionResult(TypedDict):
     failed_action: dict[str, Any] | None  # 失败动作；没有失败时为 None
 
 
+class CarAgentInput(MessagesState):
+    """主图的外部输入；调用者只需提供对话消息。"""
+
+
+class CarAgentOutput(MessagesState):
+    """主图的外部输出；最后一条消息是 Supervisor 的最终回复。"""
+
+
 class CarAgentState(MessagesState):
     """主图状态；运行时 ROS2 对象永不进入 checkpoint。"""
 

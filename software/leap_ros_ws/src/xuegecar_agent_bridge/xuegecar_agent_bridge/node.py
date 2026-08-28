@@ -52,7 +52,7 @@ class AgentGatewayNode(Node):
         # ROS 参数既提供代码默认值，也可由 gateway.yaml 在启动时覆盖。
         self.declare_parameter("http_host", "127.0.0.1")
         self.declare_parameter("http_port", 8765)
-        self.declare_parameter("odom_topic", "/odom")
+        self.declare_parameter("odom_topic", "/odometry/filtered")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("control_rate_hz", 20.0)
         for name in (
@@ -93,7 +93,7 @@ class AgentGatewayNode(Node):
 
         cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         odom_topic = str(self.get_parameter("odom_topic").value)
-        # /cmd_vel 是控制输出，/odom 是判断距离、角度和在线状态的反馈。
+        # /cmd_vel 是控制输出；EKF 融合里程计用于距离、角度和在线状态反馈。
         self._publisher = self.create_publisher(Twist, cmd_vel_topic, 10)
         self._subscription = self.create_subscription(
             Odometry,

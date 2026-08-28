@@ -1,0 +1,37 @@
+sensor_gate_node:
+  ros__parameters:
+    input_odom_topic: "/odom"
+    input_imu_topic: "/imu"
+    output_odom_topic: "/fusion/odom_valid"
+    output_imu_topic: "/fusion/imu_valid"
+
+    # 宽松硬阈值：只剔除非有限值和物理上明显不可能的数据。
+    max_abs_linear_velocity: 1.0       # m/s
+    max_abs_linear_acceleration: 10.0  # m/s^2
+    max_abs_odom_angular_velocity: 4.0 # rad/s
+    max_abs_gyro_z: 4.0                # rad/s
+    min_derivative_dt: 0.01            # s；更短的网络突发间隔不计算加速度
+    reset_derivative_after_gap: 0.5    # s；长间隔后重建速度变化基准
+
+    # fusion_calibration_02 实测：静止噪声 std≈0.0126 rad/s；
+    # stddev 取 0.08 以覆盖真实转弯幅度（转弯 |gyro_z| 中位 0.29、最大 0.596），
+    # 使 10σ 马氏门控能放行正常转弯而不是误拒。
+    imu_gyro_z_bias: -0.00942          # rad/s
+    odom_vx_stddev: 0.02               # m/s，线速度置信度
+    odom_wz_stddev: 0.04               # rad/s，轮式角速度；权重约为 IMU 的 4 倍
+    imu_gyro_z_stddev: 0.08            # rad/s
+
+    # vx 与轮式角速度同时低于阈值并持续 0.2 s，才启用静止约束。
+    # 约束生效时送入 EKF 的轮式与 IMU 角速度都为 0；检测到运动立即解除。
+    stationary_linear_velocity_threshold: 0.005   # m/s
+    stationary_angular_velocity_threshold: 0.01   # rad/s
+    stationary_hold_duration: 0.2                 # s
+
+    # MCU header.stamp 存在跳变，输出改用每次回调时真正的主机 ROS 接收时间。
+    # 若主机时间发生回拨，由 EKF 的 reset_on_time_jump 清空状态并重建时间轴。
+    retimestamp_with_receipt_time: true
+    require_monotonic_stamp: true
+    max_source_stamp_offset: 0.25        # s
+
+    diagnostic_timeout: 0.3
+    diagnostic_period: 1.0

@@ -2,7 +2,8 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "car_agent": "./src/agent/graph.py:graph"
+    "car_agent": "./src/agent/graph.py:graph",
+    "relative_motion_workflow": "./src/agent/motion_graph.py:graph"
   },
   "env": ".env",
   "image_distro": "wolfi"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -34,6 +34,18 @@ ACTION_LABELS = {
     "turn_right": "右转",
 }
 MODE_UNITS = {"distance": "米", "angle": "度", "time": "秒"}
+
+
+class MotionWorkflowInput(TypedDict):
+    """移动子图的外部输入；内部执行状态不得由调用者提供。"""
+
+    motion_actions: list[MotionAction]
+
+
+class MotionWorkflowOutput(TypedDict):
+    """移动子图完成后向调用者公开的唯一结果。"""
+
+    motion_result: MotionResult
 
 
 class MotionWorkflowNodes:
@@ -77,8 +89,9 @@ class MotionWorkflowNodes:
             {
                 "type": "confirm_robot_motion",
                 "message": (
-                    "小车将按顺序执行以下动作。第一版不使用雷达避障，"
-                    "请确保周围安全后确认。"
+                    "小车将按顺序执行以下动作。默认直线速度为 0.27 m/s、"
+                    "转向角速度为 0.53 rad/s，接近目标时会自动减速。"
+                    "当前不使用雷达避障，请确保周围安全后确认。"
                 ),
                 "actions": actions,
                 "summary": format_plan(actions),
@@ -94,19 +107,32 @@ class MotionWorkflowNodes:
 
     async def execute_next(self, state: CarAgentState) -> dict[str, Any]:
         """提交当前原子动作并等待终态，不在 Graph 内发布速度。"""
+        # 1. 根据内部下标取得当前动作。
+        # operation_id 由“计划 ID + 动作下标”组成：Workflow 因 checkpoint
+        # 恢复而重复提交同一步时，Gateway 可以用它识别同一个请求，避免重复运动。
         index = int(state.get("motion_action_index", 0))
         actions = list(state.get("motion_actions", []))
         action = dict(actions[index])
         operation_id = f"{state['motion_plan_id']}:{index}"
         payload = {"operation_id": operation_id, **action}
+
+        # 2. Gateway 使用同步 HTTP 客户端，因此通过 asyncio.to_thread() 放到
+        # 工作线程执行，避免阻塞 LangGraph 所在的 asyncio 事件循环。
         gateway = self._gateway_factory()
+        # 记录动作是否已成功提交。只有提交过动作，异常或取消时才需要主动停车。
         submitted = False
         try:
+            # current 保存 Gateway 返回的最新动作记录，其中 status 表示当前阶段。
             current = await asyncio.to_thread(gateway.submit_motion, payload)
             submitted = True
+
+            # 使用事件循环的单调时钟计算截止时间，不受系统时间调整影响。
             deadline = asyncio.get_running_loop().time() + self._action_timeout
+
+            # 3. 只要动作还没有进入成功、失败、取消等终态，就定期查询一次。
             while str(current.get("status")) not in TERMINAL_STATUSES:
                 if asyncio.get_running_loop().time() >= deadline:
+                    # Workflow 等待超时后必须先停车，再构造统一的失败记录。
                     await asyncio.to_thread(gateway.stop)
                     current = {
                         **payload,
@@ -115,13 +141,18 @@ class MotionWorkflowNodes:
                         "error": "60 秒内未收到动作终态，已下发停止",
                     }
                     break
+                # 轮询间隔限制 HTTP 查询频率，也把执行权交还给事件循环。
                 await asyncio.sleep(self._poll_interval)
                 current = await asyncio.to_thread(gateway.get_motion, operation_id)
         except asyncio.CancelledError:
+            # 4. Graph 运行被外部取消时，如果动作已经发给小车，先尝试停车。
+            # 停车后必须继续抛出 CancelledError，让上层正确感知取消，而不是误报失败。
             if submitted:
                 await asyncio.to_thread(gateway.stop)
             raise
         except RobotGatewayError as error:
+            # HTTP 提交或轮询失败时也要尽力停车。若停车本身再次通信失败，保留最初
+            # 的 Gateway 异常作为本步骤结果，避免次生异常覆盖真正原因。
             if submitted:
                 try:
                     await asyncio.to_thread(gateway.stop)
@@ -134,17 +165,21 @@ class MotionWorkflowNodes:
                 "error": str(error),
             }
 
+        # 5. 将本步骤的最终记录追加到历史结果中，供 finish() 汇总整段计划。
         results = [*state.get("motion_action_results", []), dict(current)]
         if current.get("status") == "SUCCEEDED":
             next_index = index + 1
             return {
                 "motion_action_results": results,
                 "motion_action_index": next_index,
+                # 还有动作时回到 execute_next；最后一个动作完成后进入 finish。
                 "motion_status": "success"
                 if next_index >= len(actions)
                 else "executing",
                 "motion_error": "",
             }
+
+        # 当前动作只要不是 SUCCEEDED，就终止整段计划，不再执行后续动作。
         return {
             "motion_action_results": results,
             "motion_status": "failed",
@@ -186,7 +221,11 @@ def build_motion_workflow(
 ):
     """构建固定相对移动子图。"""
     nodes = MotionWorkflowNodes(gateway_factory)
-    builder = StateGraph(CarAgentState)
+    builder = StateGraph(
+        CarAgentState,
+        input_schema=MotionWorkflowInput,
+        output_schema=MotionWorkflowOutput,
+    )
     builder.add_node("initialize", nodes.initialize)
     builder.add_node("confirm", nodes.confirm)
     builder.add_node("execute_next", nodes.execute_next)

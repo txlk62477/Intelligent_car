@@ -27,13 +27,20 @@ def command(operation_id="op-1", *, type="forward", mode="distance", value=1.0):
     )
 
 
+def test_default_motion_speeds_match_gateway_configuration():
+    config = ControllerConfig()
+
+    assert config.linear_speed == pytest.approx(0.27)
+    assert config.angular_speed == pytest.approx(0.53)
+
+
 def test_distance_motion_closes_loop_and_stops():
     controller = MotionController()
     controller.update_odom(odom(0.0))
     controller.submit(command(), 0.0)
 
     velocity = controller.tick(0.1)
-    assert velocity.linear_x == pytest.approx(0.1)
+    assert velocity.linear_x == pytest.approx(0.27)
 
     controller.update_odom(odom(1.0, x=0.98))
     velocity = controller.tick(1.0)
@@ -129,7 +136,7 @@ def test_backward_distance_commands_negative_speed():
     controller.submit(command(type="backward", mode="distance", value=1.0), 0.0)
 
     velocity = controller.tick(0.1)
-    assert velocity.linear_x == pytest.approx(-0.1)
+    assert velocity.linear_x == pytest.approx(-0.27)
 
 
 def test_approaching_target_slows_down():
@@ -139,7 +146,7 @@ def test_approaching_target_slows_down():
 
     controller.update_odom(odom(0.1, x=0.9))
     velocity = controller.tick(0.1)
-    assert 0.0 < velocity.linear_x < 0.1
+    assert 0.0 < velocity.linear_x < 0.27
 
 
 def test_stop_sequence_publishes_zero_velocity_ticks():

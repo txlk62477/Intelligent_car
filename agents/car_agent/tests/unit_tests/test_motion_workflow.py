@@ -8,6 +8,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
+import agent.workflows.motion.graph as motion_graph_module
 from agent.workflows.motion.graph import build_motion_workflow
 from unit_tests.fakes import FailingRobotGateway, FakeRobotGateway
 
@@ -17,6 +18,12 @@ _CONFIRMED_ACTIONS = [
     {"type": "turn_left", "mode": "angle", "value": 60},
     {"type": "forward", "mode": "distance", "value": 1},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fixed_motion_plan_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """固定内部计划 ID；调用者不再通过子图输入控制该中间状态。"""
+    monkeypatch.setattr(motion_graph_module, "uuid4", lambda: "plan-1")
 
 
 def _build_app(gateway: FakeRobotGateway):
@@ -35,12 +42,8 @@ def _interrupt_payload(state: dict[str, Any]) -> Any:
     return item.value if hasattr(item, "value") else item
 
 
-def _inputs(actions: list[dict[str, Any]], plan_id: str = "plan-1") -> dict[str, Any]:
-    return {
-        "messages": [],
-        "motion_actions": actions,
-        "motion_plan_id": plan_id,
-    }
+def _inputs(actions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"motion_actions": actions}
 
 
 async def _run_with_confirmation(
@@ -71,6 +74,9 @@ async def test_confirm_shows_full_plan_and_executes_serially() -> None:
         {"type": "forward", "mode": "distance", "value": 1.0},
     ]
     assert "左转" in payload["summary"] and "前进" in payload["summary"]
+    assert "0.27 m/s" in payload["message"]
+    assert "0.53 rad/s" in payload["message"]
+    assert "不使用雷达避障" in payload["message"]
 
     result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
     assert result["motion_result"]["status"] == "success"

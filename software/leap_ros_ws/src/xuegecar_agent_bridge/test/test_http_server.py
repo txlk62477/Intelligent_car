@@ -41,7 +41,8 @@ def test_http_routes_status_submit_operation_and_stop():
             base_url,
             "/v1/motions",
             payload={
-                "operation_id": "op-1",
+                # Workflow 使用“计划 ID:动作下标”，Agent 查询时会把冒号编码为 %3A。
+                "operation_id": "plan-1:0",
                 "type": "forward",
                 "mode": "time",
                 "value": 1,
@@ -49,7 +50,9 @@ def test_http_routes_status_submit_operation_and_stop():
         )
         assert status == 202
         assert body["status"] == "RUNNING"
-        assert request_json(base_url, "/v1/motions/op-1")[1]["status"] == "RUNNING"
+        assert request_json(base_url, "/v1/motions/plan-1%3A0")[1]["status"] == (
+            "RUNNING"
+        )
         assert request_json(base_url, "/v1/stop", payload={})[1] == {
             "gateway_status": "IDLE"
         }

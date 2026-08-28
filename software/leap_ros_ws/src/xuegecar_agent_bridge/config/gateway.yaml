@@ -5,13 +5,15 @@ xuegecar_agent_bridge:
     http_port: 8765          # HTTP 服务端口
 
     # ROS 2 话题：读取里程计反馈，并向底盘发布速度指令。
-    odom_topic: "/odom"         # 里程计输入话题
-    cmd_vel_topic: "/cmd_vel"   # 速度指令输出话题
+    # 里程计输入为 EKF 融合后话题；使用前必须已启动
+    # `ros2 launch xuegecar_sensor_fusion fusion.launch.py`。
+    odom_topic: "/odometry/filtered"   # 里程计输入话题（EKF 融合输出）
+    cmd_vel_topic: "/cmd_vel"          # 速度指令输出话题
 
     # 控制循环与基础速度：控制器按固定频率计算并发布 Twist。
     control_rate_hz: 20.0    # 控制循环频率，单位：Hz
-    linear_speed: 0.10       # 直线运动速度，单位：m/s
-    angular_speed: 0.40      # 转向角速度，单位：rad/s
+    linear_speed: 0.27       # 直线运动速度，单位：m/s
+    angular_speed: 0.53      # 转向角速度，单位：rad/s
 
     # 动作输入范围：超出范围的 Agent 指令会在执行前被拒绝。
     min_distance: 0.05       # 最小移动距离，单位：m
@@ -22,11 +24,11 @@ xuegecar_agent_bridge:
     max_angle_degrees: 180.0 # 最大转向角度，单位：度
 
     # 完成判定容差：剩余误差进入容差范围后，动作视为成功。
-    distance_tolerance: 0.03       # 单位：m
-    angle_tolerance_degrees: 3.0   # 单位：度
+    distance_tolerance: 0.01       # 单位：m
+    angle_tolerance_degrees: 0.5   # 单位：度
 
     # 运行安全：里程计失联或动作超时会终止运动；接近目标时降低速度。
-    odom_timeout: 1.0        # /odom 最大允许未更新时间，单位：s
+    odom_timeout: 1.0        # /odometry/filtered 最大允许未更新时间，单位：s
     action_timeout: 60.0     # 单个动作最长执行时间，单位：s
     slow_down_ratio: 0.35    # 减速区内的最低速度比例
 

@@ -43,7 +43,7 @@ class MotionAction(BaseModel):
 
 @tool
 def get_robot_status() -> dict:
-    """查询小车在线状态、里程计位姿、速度以及当前或最近运动结果。"""
+    """查询小车在线状态、EKF 融合相对位姿、速度以及当前或最近运动结果。"""
     return get_robot_gateway().get_status()
 
 

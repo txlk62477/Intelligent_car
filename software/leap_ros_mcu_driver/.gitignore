@@ -1,0 +1,16 @@
+.vscode/
+.idea/
+.codex/
+.agents/
+
+build/
+sdkconfig.old
+*.log
+
+# ESP-IDF 托管组件缓存（micro_ros 等第三方依赖，随固件独立管理，不进主仓库）
+managed_components/
+
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

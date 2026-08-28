@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import re
+from collections.abc import Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
+from urllib.parse import unquote
 
 from xuegecar_agent_bridge.controller import MotionRejected
-
 
 MAX_BODY_BYTES = 64 * 1024
 # operation_id 只能占据最后一个路径段，避免把额外的子路径误当成动作 ID。
@@ -84,9 +84,14 @@ def _handler_factory(
                 return
             match = OPERATION_PATH.fullmatch(self.path)
             if match:
-                result = operation(match.group(1))
+                # Agent 会对路径段执行 URL 编码，例如计划动作 ID 中的冒号会变成
+                # %3A。查询状态前必须还原原始 operation_id，才能命中提交时保存的记录。
+                operation_id = unquote(match.group(1))
+                result = operation(operation_id)
                 if result is None:
-                    self._write_json(404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"})
+                    self._write_json(
+                        404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"}
+                    )
                 else:
                     self._write_json(200, result)
                 return
@@ -103,15 +108,23 @@ def _handler_factory(
                     # 停车也走节点回调，以保证取消动作与发布零速度在 ROS 主线程处理。
                     self._write_json(200, stop())
                     return
-                self._write_json(404, {"error_code": "NOT_FOUND", "error": "接口不存在"})
+                self._write_json(
+                    404, {"error_code": "NOT_FOUND", "error": "接口不存在"}
+                )
             except MotionRejected as error:
                 # 冲突类错误使用 409，其他确定性动作校验错误使用 422。
                 status_code = 409 if error.code in {"BUSY", "ID_CONFLICT"} else 422
-                self._write_json(status_code, {"error_code": error.code, "error": str(error)})
+                self._write_json(
+                    status_code, {"error_code": error.code, "error": str(error)}
+                )
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-                self._write_json(400, {"error_code": "INVALID_JSON", "error": str(error)})
+                self._write_json(
+                    400, {"error_code": "INVALID_JSON", "error": str(error)}
+                )
             except TimeoutError as error:
-                self._write_json(503, {"error_code": "GATEWAY_TIMEOUT", "error": str(error)})
+                self._write_json(
+                    503, {"error_code": "GATEWAY_TIMEOUT", "error": str(error)}
+                )
 
         def _read_json(self) -> dict[str, Any]:
             # 先校验长度再读取请求体，防止无界输入占用过多内存。
@@ -128,7 +141,9 @@ def _handler_factory(
 
         def _write_json(self, status_code: int, payload: dict[str, Any]) -> None:
             # HTTP 回复统一为 UTF-8 JSON；wfile.write() 才是真正把正文发回 Agent。
-            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode(
+                "utf-8"
+            )
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

@@ -1,0 +1,48 @@
+ekf_filter_node:
+  ros__parameters:
+    frequency: 50.0
+    sensor_timeout: 0.3
+    two_d_mode: true
+    publish_tf: false
+    publish_acceleration: false
+    print_diagnostics: true
+    # 主机 ROS 时间回拨时清空滤波状态，避免旧时间轴上的未来观测阻塞更新。
+    reset_on_time_jump: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # 状态顺序：x, y, z, roll, pitch, yaw,
+    #           vx, vy, vz, vroll, vpitch, vyaw,
+    #           ax, ay, az
+    # EKF 内部运动模型负责 predict；轮式 vx、轮式 vyaw 与 IMU gyro_z
+    # 作为三项观测 update，其中两路角速度共同更新同一个 vyaw 状态。
+    # 不直接融合 MCU 已积分的 x/y/yaw，避免轮速信息重复进入滤波器，也避免
+    # 轮距误差通过 MCU yaw 持续拉偏融合结果。
+    odom0: /fusion/odom_valid
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 20
+    odom0_differential: false
+    odom0_relative: false
+    # 对轮式 vx 与 vyaw 的联合残差执行宽松马氏门控。
+    odom0_twist_rejection_threshold: 6.0
+
+    imu0: /fusion/imu_valid
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: false
+    # fusion_calibration_02 实测转弯 |gyro_z| 最大 0.596 rad/s（命令 ±0.30）；
+    # 10σ × imu_gyro_z_stddev(0.08) = 0.8 rad/s，正常转弯放行，物理野值仍被拦。
+    imu0_twist_rejection_threshold: 10.0
+    imu0_remove_gravitational_acceleration: false
