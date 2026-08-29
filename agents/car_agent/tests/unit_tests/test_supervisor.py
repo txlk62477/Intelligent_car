@@ -11,7 +11,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 import agent.tools.robot as robot_tools
+import agent.tools.vision as vision_tools
 from agent.supervisor.graph import build_car_agent_graph
+from agent.vision.recognizer import VisionResult
 from unit_tests.fakes import FakeChatModel, FakeRobotGateway, tool_call_ai
 
 pytestmark = pytest.mark.anyio
@@ -42,7 +44,7 @@ def _patch_direct_gateway(
     monkeypatch: pytest.MonkeyPatch,
     gateway: FakeRobotGateway,
 ) -> None:
-    """让标准 ToolNode 中的真实工具使用测试 Gateway。"""
+    """让直接工具节点中的真实工具使用测试 Gateway。"""
     monkeypatch.setattr(robot_tools, "get_robot_gateway", lambda: gateway)
 
 
@@ -81,6 +83,47 @@ async def test_status_tool_routes_to_gateway(
     assert len(tools) == 1
     assert tools[0].name == "get_robot_status"
     assert result["messages"][-1].content == "小车在线，位姿正常。"
+
+
+async def test_image_tool_routes_through_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = "/home/lk/car/test/fixtures/esp_vga_q20.jpg"
+
+    class FakeRecognizer:
+        async def recognize(self, path: Any, question: str | None = None) -> VisionResult:
+            assert str(path) == image_path
+            assert question == "这个是什么？"
+            return VisionResult(
+                status="success",
+                answer="乡村场景。",
+                provider="fake",
+                model="fake-vision",
+                latency_ms=1.0,
+            )
+
+    monkeypatch.setattr(vision_tools, "get_vision_recognizer", lambda: FakeRecognizer())
+    model = FakeChatModel(
+        [
+            tool_call_ai(
+                "recognize_image",
+                {"image_path": image_path, "question": "这个是什么？"},
+            ),
+            AIMessage(content="这是乡村场景。"),
+        ]
+    )
+    app = _build_app(model, FakeRobotGateway())
+
+    result = await app.ainvoke(
+        {"messages": [("user", "请看看这张图片：" + image_path)]},
+        config=_config("sup-image-1"),
+    )
+
+    tools = _tool_messages(result)
+    assert len(tools) == 1
+    assert tools[0].name == "recognize_image"
+    assert '"answer": "乡村场景。"' in tools[0].content
+    assert result["messages"][-1].content == "这是乡村场景。"
 
 
 async def test_stop_tool_bypasses_workflow_and_confirmation(
@@ -209,3 +252,12 @@ async def test_graph_uses_direct_tools_and_motion_handoff_nodes() -> None:
     assert "prepare_motion_handoff" in node_names
     assert "relative_motion_workflow" in node_names
     assert "run_tool" not in node_names
+
+
+def test_supervisor_binds_image_recognition_tool() -> None:
+    model = FakeChatModel()
+    _build_app(model, FakeRobotGateway())
+
+    names = {tool.name for tool in model.bound_tools}
+
+    assert "recognize_image" in names

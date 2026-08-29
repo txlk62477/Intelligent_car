@@ -64,6 +64,6 @@ def delegate_to_motion_workflow(
     return "该工具由 Supervisor handoff 节点处理，不应被直接调用。"
 
 
-# 普通工具由标准 ToolNode 执行；移动工具只作为 Supervisor 的 handoff schema。
+# 普通工具由 Supervisor 的直接工具节点执行；移动工具只作为 handoff schema。
 DIRECT_TOOLS = [get_robot_status, stop_robot]
 SUPERVISOR_TOOLS = [*DIRECT_TOOLS, delegate_to_motion_workflow]

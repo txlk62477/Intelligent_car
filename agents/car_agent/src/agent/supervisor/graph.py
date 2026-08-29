@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
+from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
 
 from agent.common.robot_gateway import RobotGateway, get_robot_gateway
 from agent.state.car_agent import CarAgentInput, CarAgentOutput, CarAgentState
-from agent.tools.robot import DIRECT_TOOLS, SUPERVISOR_TOOLS, MotionAction
+from agent.tools import DIRECT_TOOLS, SUPERVISOR_TOOLS
+from agent.tools.robot import MotionAction
 from agent.workflows.motion import build_motion_workflow
 
 SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普通问题、查询小车状态、
@@ -38,6 +39,9 @@ SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普�
    不得把基础指令速度描述成小车始终能够达到的真实测量速度。
 10. 融合里程计当前使用轮式 vx 与 IMU gyro_z，不能单独证明轮子没有悬空或打滑。没有外部
     激光、视觉或其他接地证据时，不得声称位移一定等于真实车身位移。
+11. 用户提供本地图片并询问图片内容时，调用 recognize_image；图片路径必须使用用户提供的
+    路径，问题可选。工具返回失败时如实说明，不要猜测图片内容，也不要把图片 Base64 或内部
+    Provider 错误细节展示给用户。
 """
 
 
@@ -55,37 +59,55 @@ class SupervisorNodes:
             parallel_tool_calls=False,
         )
 
-    async def supervisor(self, state: CarAgentState) -> dict[str, list[BaseMessage]]:
-        """让模型直接回答或选择唯一工具。"""
+    async def supervisor(
+        self, state: CarAgentState
+    ) -> Command:
+        """让模型直接回答或选择唯一工具，并显式跳转到下一节点。"""
         response = await self._model.ainvoke(
             [SystemMessage(content=SUPERVISOR_PROMPT), *state.get("messages", [])]
         )
-        return {"messages": [response]}
+        if not response.tool_calls:
+            destination = END
+        elif (
+            len(response.tool_calls) == 1
+            and str(response.tool_calls[0].get("name"))
+            == "delegate_to_motion_workflow"
+        ):
+            destination = "prepare_motion_handoff"
+        else:
+            destination = "direct_tools"
+        return Command(update={"messages": [response]}, goto=destination)
 
-    def prepare_motion_handoff(self, state: CarAgentState) -> dict[str, Any]:
+    def prepare_motion_handoff(self, state: CarAgentState) -> Command:
         """验证唯一的移动工具调用，并准备移动子图所需的状态。"""
         messages = list(state.get("messages", []))
         last = messages[-1] if messages else None
         if not isinstance(last, AIMessage) or len(last.tool_calls) != 1:
-            return {
-                "motion_status": "handoff_failed",
-                "motion_error": "移动委派必须是唯一工具调用",
-            }
+            return Command(
+                update={
+                    "motion_status": "handoff_failed",
+                    "motion_error": "移动委派必须是唯一工具调用",
+                },
+                goto="supervisor",
+            )
 
         call = last.tool_calls[0]
         name = str(call.get("name"))
         call_id = str(call.get("id"))
         if name != "delegate_to_motion_workflow":
-            return {
-                "messages": [
-                    _tool_message(
-                        call,
-                        {"status": "rejected", "error": f"未知移动工具：{name}"},
-                    )
-                ],
-                "motion_status": "handoff_failed",
-                "motion_error": f"未知移动工具：{name}",
-            }
+            return Command(
+                update={
+                    "messages": [
+                        _tool_message(
+                            call,
+                            {"status": "rejected", "error": f"未知移动工具：{name}"},
+                        )
+                    ],
+                    "motion_status": "handoff_failed",
+                    "motion_error": f"未知移动工具：{name}",
+                },
+                goto="supervisor",
+            )
 
         try:
             raw_actions = call.get("args", {}).get("actions", [])
@@ -96,26 +118,32 @@ class SupervisorNodes:
             if not actions:
                 raise ValueError("动作列表不能为空")
         except (AttributeError, TypeError, ValueError) as error:
-            return {
-                "messages": [
-                    _tool_message(
-                        call,
-                        {"status": "rejected", "error": f"动作计划无效：{error}"},
-                    )
-                ],
-                "motion_status": "handoff_failed",
-                "motion_error": f"动作计划无效：{error}",
-            }
-        return {
-            "motion_actions": actions,
-            "motion_tool_call_id": call_id,
-            "motion_plan_id": "",
-            "motion_action_index": 0,
-            "motion_action_results": [],
-            "motion_status": "delegated",
-            "motion_error": "",
-            "motion_result": None,
-        }
+            return Command(
+                update={
+                    "messages": [
+                        _tool_message(
+                            call,
+                            {"status": "rejected", "error": f"动作计划无效：{error}"},
+                        )
+                    ],
+                    "motion_status": "handoff_failed",
+                    "motion_error": f"动作计划无效：{error}",
+                },
+                goto="supervisor",
+            )
+        return Command(
+            update={
+                "motion_actions": actions,
+                "motion_tool_call_id": call_id,
+                "motion_plan_id": "",
+                "motion_action_index": 0,
+                "motion_action_results": [],
+                "motion_status": "delegated",
+                "motion_error": "",
+                "motion_result": None,
+            },
+            goto="relative_motion_workflow",
+        )
 
     def collect_motion_result(self, state: CarAgentState) -> dict[str, Any]:
         """保持 AI tool-call 与 ToolMessage 配对后交还 Supervisor。"""
@@ -137,6 +165,47 @@ class SupervisorNodes:
         }
 
 
+class DirectToolsNode:
+    """执行 Supervisor 的直接工具，避免把工具执行细节暴露给图状态。"""
+
+    def __init__(self, tools: list[Any]) -> None:
+        """按名称索引同步或异步 LangChain 工具。"""
+        self._tools = {str(tool.name): tool for tool in tools}
+
+    async def __call__(self, state: CarAgentState) -> dict[str, list[ToolMessage]]:
+        """串行执行本轮工具调用并生成成对的 ToolMessage。"""
+        messages = list(state.get("messages", []))
+        last = messages[-1] if messages else None
+        if not isinstance(last, AIMessage):
+            return {"messages": []}
+        outputs: list[ToolMessage] = []
+        for call in last.tool_calls:
+            name = str(call.get("name", "unknown"))
+            tool = self._tools.get(name)
+            if tool is None:
+                outputs.append(
+                    _tool_message(call, {"error": f"{name} is not a valid tool"})
+                )
+                continue
+            try:
+                if getattr(tool, "coroutine", None) is not None:
+                    result = await tool.ainvoke(call)
+                else:
+                    result = tool.invoke(call)
+                if isinstance(result, ToolMessage):
+                    outputs.append(result)
+                else:
+                    outputs.append(_tool_message(call, result))
+            except Exception as error:
+                outputs.append(
+                    _tool_message(
+                        call,
+                        {"error": f"Error invoking tool {name}: {error}"},
+                    )
+                )
+        return {"messages": outputs}
+
+
 def build_car_agent_graph(
     *,
     model_factory: Callable[[], Any],
@@ -146,7 +215,7 @@ def build_car_agent_graph(
 ):
     """构建 Supervisor 主图并嵌入固定相对移动子图。"""
     nodes = SupervisorNodes(model_factory=model_factory)
-    direct_tools = ToolNode(DIRECT_TOOLS, name="direct_tools")
+    direct_tools = DirectToolsNode(DIRECT_TOOLS)
     motion_workflow = build_motion_workflow(
         gateway_factory=gateway_factory,
         checkpointer=checkpointer,
@@ -162,48 +231,21 @@ def build_car_agent_graph(
     builder.add_node("relative_motion_workflow", motion_workflow)
     builder.add_node("collect_motion_result", nodes.collect_motion_result)
     builder.add_edge(START, "supervisor")
-    builder.add_conditional_edges(
-        "supervisor",
-        _after_supervisor,
-        {
-            "direct_tools": "direct_tools",
-            "motion_handoff": "prepare_motion_handoff",
-            "complete": END,
-        },
-    )
     builder.add_edge("direct_tools", "supervisor")
-    builder.add_conditional_edges(
-        "prepare_motion_handoff",
-        _after_motion_handoff,
-        {"motion": "relative_motion_workflow", "supervisor": "supervisor"},
-    )
     builder.add_edge("relative_motion_workflow", "collect_motion_result")
     builder.add_edge("collect_motion_result", "supervisor")
     return builder.compile(name=name, checkpointer=checkpointer)
 
 
-def _after_supervisor(
-    state: CarAgentState,
-) -> Literal["direct_tools", "motion_handoff", "complete"]:
-    messages = state.get("messages", [])
-    last = messages[-1] if messages else None
-    if not isinstance(last, AIMessage) or not last.tool_calls:
-        return "complete"
-    if (
-        len(last.tool_calls) == 1
-        and str(last.tool_calls[0].get("name")) == "delegate_to_motion_workflow"
-    ):
-        return "motion_handoff"
-    return "direct_tools"
-
-
-def _after_motion_handoff(state: CarAgentState) -> Literal["motion", "supervisor"]:
-    return "motion" if state.get("motion_status") == "delegated" else "supervisor"
-
-
-def _tool_message(call: Mapping[str, Any], result: dict[str, Any]) -> ToolMessage:
+def _tool_message(call: Mapping[str, Any], result: Any) -> ToolMessage:
+    """把任意工具输出编码成可放入消息的 JSON 内容。"""
+    content = (
+        result
+        if isinstance(result, str)
+        else json.dumps(result, ensure_ascii=False, default=str)
+    )
     return ToolMessage(
-        content=json.dumps(result, ensure_ascii=False, default=str),
+        content=content,
         name=str(call.get("name", "unknown")),
         tool_call_id=str(call.get("id", "unknown")),
     )

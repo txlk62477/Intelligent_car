@@ -44,3 +44,4 @@ def test_supervisor_prompt_defines_routing_and_limits() -> None:
     assert "0.27 m/s" in SUPERVISOR_PROMPT
     assert "0.53 rad/s" in SUPERVISOR_PROMPT
     assert "悬空或打滑" in SUPERVISOR_PROMPT
+    assert "recognize_image" in SUPERVISOR_PROMPT
