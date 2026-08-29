@@ -34,6 +34,101 @@ MotionStateMachineConfig make_motion_config()
   };
 }
 
+SourceStampGate make_source_stamp_gate()
+{
+  return SourceStampGate(SourceStampGateConfig{
+    0.25,  // max absolute source/receipt offset
+    1.0}); // reset after accepted-message gap
+}
+
+TEST(SourceStampGateTest, AcceptsStrictlyIncreasingFreshStamps)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
+    SourceStampResult::kAccepted);
+  EXPECT_EQ(
+    gate.evaluate(1020000000LL, 1120000000LL, 1.02),
+    SourceStampResult::kAccepted);
+}
+
+TEST(SourceStampGateTest, RejectsStaleAndFutureStamps)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1300000000LL, 1.0),
+    SourceStampResult::kOffset);
+  EXPECT_EQ(
+    gate.evaluate(1300000000LL, 1000000000LL, 1.0),
+    SourceStampResult::kOffset);
+}
+
+TEST(SourceStampGateTest, RejectsNonMonotonicStampWithoutPoisoningBaseline)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
+    SourceStampResult::kAccepted);
+  EXPECT_EQ(
+    gate.evaluate(990000000LL, 1110000000LL, 1.01),
+    SourceStampResult::kNonMonotonic);
+  EXPECT_EQ(
+    gate.evaluate(1020000000LL, 1120000000LL, 1.02),
+    SourceStampResult::kAccepted);
+}
+
+TEST(SourceStampGateTest, ReinitializesAfterLongAcceptedMessageGap)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
+    SourceStampResult::kAccepted);
+  EXPECT_EQ(
+    gate.evaluate(900000000LL, 1000000000LL, 2.01),
+    SourceStampResult::kReinitialized);
+  EXPECT_EQ(
+    gate.evaluate(920000000LL, 1020000000LL, 2.03),
+    SourceStampResult::kAccepted);
+}
+
+TEST(SourceStampGateTest, ReinitializesAfterLongGapEvenWhenStampKeepsIncreasing)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
+    SourceStampResult::kAccepted);
+  EXPECT_EQ(
+    gate.evaluate(2000000000LL, 2100000000LL, 2.01),
+    SourceStampResult::kReinitialized);
+  EXPECT_EQ(
+    gate.evaluate(2020000000LL, 2120000000LL, 2.03),
+    SourceStampResult::kAccepted);
+}
+
+TEST(SourceStampGateTest, InvalidOrStaleMessagesDoNotConsumeReconnectGap)
+{
+  auto gate = make_source_stamp_gate();
+  EXPECT_EQ(
+    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
+    SourceStampResult::kAccepted);
+  EXPECT_EQ(
+    gate.evaluate(500000000LL, 2000000000LL, 2.0),
+    SourceStampResult::kOffset);
+  EXPECT_EQ(
+    gate.evaluate(900000000LL, 1000000000LL, 2.01),
+    SourceStampResult::kReinitialized);
+}
+
+TEST(SourceStampGateTest, RejectsInvalidConfiguration)
+{
+  EXPECT_THROW(
+    SourceStampGate(SourceStampGateConfig{0.0, 1.0}),
+    std::invalid_argument);
+  EXPECT_THROW(
+    SourceStampGate(SourceStampGateConfig{0.25, 0.0}),
+    std::invalid_argument);
+}
+
 TEST(ScalarGateTest, AcceptsFiniteValuesWithinMagnitude)
 {
   auto gate = make_gate();

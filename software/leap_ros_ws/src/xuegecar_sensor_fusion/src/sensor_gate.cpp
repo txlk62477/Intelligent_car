@@ -6,6 +6,67 @@
 namespace xuegecar_sensor_fusion
 {
 
+SourceStampGate::SourceStampGate(const SourceStampGateConfig & config)
+: config_(config)
+{
+  if (!std::isfinite(config_.max_abs_offset_seconds) ||
+    config_.max_abs_offset_seconds <= 0.0)
+  {
+    throw std::invalid_argument("max_abs_offset_seconds must be finite and positive");
+  }
+  if (!std::isfinite(config_.reset_after_gap_seconds) ||
+    config_.reset_after_gap_seconds <= 0.0)
+  {
+    throw std::invalid_argument("reset_after_gap_seconds must be finite and positive");
+  }
+}
+
+SourceStampResult SourceStampGate::evaluate(
+  const std::int64_t source_nanoseconds,
+  const std::int64_t receipt_nanoseconds,
+  const double steady_receipt_seconds)
+{
+  if (source_nanoseconds <= 0 || receipt_nanoseconds <= 0 ||
+    !std::isfinite(steady_receipt_seconds))
+  {
+    return SourceStampResult::kInvalid;
+  }
+
+  const auto max_offset_nanoseconds = static_cast<std::int64_t>(
+    config_.max_abs_offset_seconds * 1.0e9);
+  if (std::abs(receipt_nanoseconds - source_nanoseconds) > max_offset_nanoseconds) {
+    return SourceStampResult::kOffset;
+  }
+
+  if (has_previous_) {
+    const double receipt_gap =
+      steady_receipt_seconds - previous_accepted_receipt_seconds_;
+    if (receipt_gap <= 0.0) {
+      return SourceStampResult::kInvalid;
+    }
+    if (receipt_gap > config_.reset_after_gap_seconds) {
+      previous_source_nanoseconds_ = source_nanoseconds;
+      previous_accepted_receipt_seconds_ = steady_receipt_seconds;
+      return SourceStampResult::kReinitialized;
+    }
+    if (source_nanoseconds <= previous_source_nanoseconds_) {
+      return SourceStampResult::kNonMonotonic;
+    }
+  }
+
+  has_previous_ = true;
+  previous_source_nanoseconds_ = source_nanoseconds;
+  previous_accepted_receipt_seconds_ = steady_receipt_seconds;
+  return SourceStampResult::kAccepted;
+}
+
+void SourceStampGate::reset()
+{
+  has_previous_ = false;
+  previous_source_nanoseconds_ = 0;
+  previous_accepted_receipt_seconds_ = 0.0;
+}
+
 ScalarGate::ScalarGate(const ScalarGateConfig & config)
 : config_(config)
 {

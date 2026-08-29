@@ -25,7 +25,8 @@ static const char *kRuntimeCfgMicroRosAgentIpKey = "uros_ip";
 static const char *kRuntimeCfgMicroRosAgentPortKey = "uros_port";
 static const char *kDefaultStaSsid = "oneadd";
 static const char *kDefaultStaPassword = "147258369";
-static const char *kDefaultMicroRosAgentIp = "10.113.157.62";
+static const char *kDefaultMicroRosAgentIp = "10.48.186.62";
+static const char *kLegacyMicroRosAgentIp = "10.113.157.62";
 static constexpr uint16_t kDefaultMicroRosAgentPort = 8888;
 static constexpr esp_err_t kProvisionOnlyCredentials = ESP_ERR_INVALID_STATE;
 
@@ -411,6 +412,21 @@ esp_err_t wifi_load_runtime_config(WifiRuntimeConfig *config) {
     if (!is_valid_runtime_config(config)) {
         wifi_get_default_runtime_config(config);
         return ESP_ERR_INVALID_ARG;
+    }
+
+    // 仅迁移这个固件曾使用的旧默认值，保留用户手工配置的其他 Agent 地址。
+    if (strcmp(config->microros_agent_ip, kLegacyMicroRosAgentIp) == 0) {
+        strncpy(config->microros_agent_ip, kDefaultMicroRosAgentIp,
+                sizeof(config->microros_agent_ip) - 1);
+        config->microros_agent_ip[sizeof(config->microros_agent_ip) - 1] = '\0';
+        const esp_err_t migration_err = wifi_save_runtime_config(config);
+        if (migration_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to persist micro-ROS Agent IP migration: %s",
+                     esp_err_to_name(migration_err));
+        } else {
+            ESP_LOGI(TAG, "Migrated micro-ROS Agent IP from %s to %s",
+                     kLegacyMicroRosAgentIp, kDefaultMicroRosAgentIp);
+        }
     }
     return err;
 }

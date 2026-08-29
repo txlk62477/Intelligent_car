@@ -40,11 +40,10 @@ sensor_gate_node:
     turn_odom_wz_stddev: 0.16                     # rad/s，原地转弯时轮式角速度置信度
     arc_odom_wz_stddev: 0.08                      # rad/s，弧线时轮式角速度置信度
 
-    # MCU header.stamp 存在跳变，输出改用每次回调时真正的主机 ROS 接收时间。
-    # 若主机时间发生回拨，由 EKF 的 reset_on_time_jump 清空状态并重建时间轴。
-    retimestamp_with_receipt_time: true
-    require_monotonic_stamp: true
-    max_source_stamp_offset: 0.25        # s
+    # MCU 使用采样时的单调时钟并映射到 ROS epoch。主机保留源时间戳，拒绝旧包、
+    # 未来包和乱序包；断流足够久后允许新会话安全重建时间基准。
+    max_source_stamp_offset: 0.25        # s，源时间与接收时间最大允许偏差
+    source_stamp_reset_after_gap: 1.0    # s，超过此断流时长允许时间基准重建
 
     diagnostic_timeout: 0.3
     diagnostic_period: 1.0

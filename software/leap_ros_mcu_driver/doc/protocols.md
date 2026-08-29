@@ -14,7 +14,7 @@
 | MAVLink UDP | `mavlink_udp` | 否 |
 | MAVLink UART | `uart_mavlink` | 否 |
 
-通信模式保存在 NVS 的运行配置中，可通过网页配置页面修改。默认 micro-ROS agent 地址为 `192.168.31.214:8888`。
+通信模式保存在 NVS 的运行配置中，可通过网页配置页面修改。默认 micro-ROS agent 地址为 `10.48.186.62:8888`。
 
 ## 单位约定
 
@@ -36,7 +36,7 @@
 | --- | --- |
 | 节点名称 | `leap_low_driver` |
 | 本地 UDP 端口 | `CONFIG_MICRO_ROS_LOCAL_PORT`，默认 `8888` |
-| Agent 地址 | 运行时 `g_microros_agent_ip:g_microros_agent_port`，默认 `192.168.31.214:8888` |
+| Agent 地址 | 运行时 `g_microros_agent_ip:g_microros_agent_port`，默认 `10.48.186.62:8888` |
 | 定时器周期 | 20 ms |
 
 ### 订阅话题

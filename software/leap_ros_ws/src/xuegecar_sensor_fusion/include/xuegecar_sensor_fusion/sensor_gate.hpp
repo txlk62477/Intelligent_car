@@ -15,6 +15,39 @@ enum class GateResult : std::uint8_t
   kRate,
 };
 
+enum class SourceStampResult : std::uint8_t
+{
+  kAccepted,
+  kReinitialized,
+  kInvalid,
+  kOffset,
+  kNonMonotonic,
+};
+
+struct SourceStampGateConfig
+{
+  double max_abs_offset_seconds{0.0};
+  double reset_after_gap_seconds{0.0};
+};
+
+class SourceStampGate
+{
+public:
+  explicit SourceStampGate(const SourceStampGateConfig & config);
+
+  SourceStampResult evaluate(
+    std::int64_t source_nanoseconds,
+    std::int64_t receipt_nanoseconds,
+    double steady_receipt_seconds);
+  void reset();
+
+private:
+  SourceStampGateConfig config_;
+  bool has_previous_{false};
+  std::int64_t previous_source_nanoseconds_{0};
+  double previous_accepted_receipt_seconds_{0.0};
+};
+
 struct ScalarGateConfig
 {
   double max_abs_value{0.0};

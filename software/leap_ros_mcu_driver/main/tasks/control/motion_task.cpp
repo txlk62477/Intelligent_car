@@ -90,11 +90,14 @@ void motion_task(void *p) {
         
         // 5. 更新遥测状态并上报
         robot.GetVelocity(&status_msg.vx, &status_msg.vy, &status_msg.wz);
-        robot.GetOdometry(&status_msg.x, &status_msg.y, &status_msg.yaw); 
+        robot.GetOdometry(&status_msg.x, &status_msg.y, &status_msg.yaw);
         robot.GetOdometryQuaternion(&status_msg.qw,&status_msg.qx,&status_msg.qy,&status_msg.qz);
 
         robot.GetAllMotorVelocities(&status_msg.vel_left, &status_msg.vel_right);
-        
+
+        // 与本轮编码器读取/里程计更新对应的 MCU 单调采样时间。
+        status_msg.sample_time_us = current_update_us;
+
         status_msg.control_mode = cmd_msg.control_mode;
         status_msg.source = cmd_msg.source;
         status_msg.target_vx = cmd_msg.target_vx; 

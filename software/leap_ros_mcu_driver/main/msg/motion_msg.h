@@ -13,6 +13,9 @@ enum MotionCmdSource : uint8_t {
 };
 
 struct MotionMsg {
+    // 本状态对应的 MCU 单调采样时间，不参与控制指令语义。
+    int64_t sample_time_us = 0;
+
     uint8_t source = MOTION_SRC_NONE;
     uint8_t control_mode = 0; // 0速度, 1位置
 

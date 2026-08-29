@@ -51,9 +51,10 @@ ros2 topic echo /diagnostics
 
 - 静止 IMU `gyro_z` 零偏约 `-0.00942 rad/s`；
 - `/odom` 与 `/imu` 典型频率约 `50 Hz`；
-- MCU 时间戳存在倒退和秒级跳变，因此默认使用每次回调时真正的主机 ROS
-  接收时间。EKF 开启 `reset_on_time_jump`，主机时间回拨时清空位姿状态并从
-  新时间轴重新计算，避免未来时间戳阻塞实时更新；
+- MCU 使用采样时的单调时钟，并在 micro-ROS 会话同步后通过固定偏移映射到
+  ROS epoch；`/odom` 通过 best-effort 传输，避免可靠流积压旧速度；
+- 主机保留 MCU 源时间，拒绝超过允许偏差、非单调或乱序的消息。断流超过
+  `source_stamp_reset_after_gap` 后允许新会话安全重建时间基准；
 - 马氏拒绝门限按 `fusion_calibration_02` 实测转弯幅度标定：odom `6σ`（覆盖 0.12 m/s）、IMU `10σ`（覆盖 0.8 rad/s）。
 
 所有硬阈值、零偏和标准差都位于 `config/sensor_gate.yaml`，无需修改代码即可重新标定。

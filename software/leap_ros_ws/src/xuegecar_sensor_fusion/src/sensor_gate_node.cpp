@@ -33,6 +33,7 @@ struct GateCounters
   std::uint64_t rejected_rate{0};
   std::uint64_t rejected_timestamp{0};
   std::uint64_t source_stamp_anomalies{0};
+  std::uint64_t source_stamp_resets{0};
   double last_receive_seconds{-1.0};
 };
 
@@ -94,10 +95,9 @@ public:
     turn_odom_wz_stddev_ = declare_parameter<double>("turn_odom_wz_stddev", 0.16);
     arc_odom_wz_stddev_ = declare_parameter<double>("arc_odom_wz_stddev", 0.08);
     imu_gyro_z_stddev_ = declare_parameter<double>("imu_gyro_z_stddev", 0.08);
-    retimestamp_with_receipt_time_ =
-      declare_parameter<bool>("retimestamp_with_receipt_time", true);
-    require_monotonic_stamp_ = declare_parameter<bool>("require_monotonic_stamp", true);
     max_source_stamp_offset_ = declare_parameter<double>("max_source_stamp_offset", 0.25);
+    source_stamp_reset_after_gap_ =
+      declare_parameter<double>("source_stamp_reset_after_gap", 1.0);
     diagnostic_timeout_ = declare_parameter<double>("diagnostic_timeout", 0.3);
     const double diagnostic_period = declare_parameter<double>("diagnostic_period", 1.0);
 
@@ -107,14 +107,21 @@ public:
     validate_positive_finite("arc_odom_wz_stddev", arc_odom_wz_stddev_);
     validate_positive_finite("imu_gyro_z_stddev", imu_gyro_z_stddev_);
     validate_positive_finite("max_source_stamp_offset", max_source_stamp_offset_);
+    validate_positive_finite("source_stamp_reset_after_gap", source_stamp_reset_after_gap_);
     validate_positive_finite("diagnostic_timeout", diagnostic_timeout_);
     validate_positive_finite("diagnostic_period", diagnostic_period);
     if (!std::isfinite(imu_gyro_z_bias_)) {
       throw std::invalid_argument("imu_gyro_z_bias must be finite");
     }
 
-    const auto odom_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
-    odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(output_odom_topic_, odom_qos);
+    odom_stamp_gate_ = std::make_unique<SourceStampGate>(SourceStampGateConfig{
+      max_source_stamp_offset_, source_stamp_reset_after_gap_});
+    imu_stamp_gate_ = std::make_unique<SourceStampGate>(SourceStampGateConfig{
+      max_source_stamp_offset_, source_stamp_reset_after_gap_});
+
+    const auto filtered_odom_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
+    odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(
+      output_odom_topic_, filtered_odom_qos);
     imu_publisher_ = create_publisher<sensor_msgs::msg::Imu>(
       output_imu_topic_, rclcpp::SensorDataQoS());
     diagnostics_publisher_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
@@ -123,7 +130,7 @@ public:
       "/fusion/motion_phase", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
 
     odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
-      input_odom_topic_, odom_qos,
+      input_odom_topic_, rclcpp::SensorDataQoS(),
       std::bind(&SensorGateNode::handle_odom, this, std::placeholders::_1));
     imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
       input_imu_topic_, rclcpp::SensorDataQoS(),
@@ -205,26 +212,25 @@ private:
   bool source_stamp_is_acceptable(
     const builtin_interfaces::msg::Time & stamp,
     const std::int64_t receipt_nanoseconds,
-    std::int64_t & last_stamp,
-    bool & has_last_stamp,
-    GateCounters & counters)
+    const double steady_receipt_seconds,
+    SourceStampGate & gate,
+    GateCounters & counters,
+    bool & reinitialized)
   {
     const std::int64_t current = stamp_nanoseconds(stamp);
-    const auto offset = std::abs(receipt_nanoseconds - current);
-    const auto max_offset = static_cast<std::int64_t>(max_source_stamp_offset_ * 1.0e9);
-    const bool anomaly = current <= 0 || offset > max_offset ||
-      (has_last_stamp && current <= last_stamp);
-    if (anomaly) {
-      ++counters.source_stamp_anomalies;
-      if (require_monotonic_stamp_ && !retimestamp_with_receipt_time_) {
-        ++counters.rejected_timestamp;
-        return false;
-      }
-    } else {
-      last_stamp = current;
-      has_last_stamp = true;
+    const SourceStampResult result = gate.evaluate(
+      current, receipt_nanoseconds, steady_receipt_seconds);
+    reinitialized = result == SourceStampResult::kReinitialized;
+    if (reinitialized) {
+      ++counters.source_stamp_resets;
+      return true;
     }
-    return true;
+    if (result == SourceStampResult::kAccepted) {
+      return true;
+    }
+    ++counters.source_stamp_anomalies;
+    ++counters.rejected_timestamp;
+    return false;
   }
 
   static void count_rejection(const GateResult result, GateCounters & counters)
@@ -268,23 +274,32 @@ private:
     ++odom_counters_.received;
     odom_counters_.last_receive_seconds = receipt_seconds;
 
+    bool source_stamp_reinitialized = false;
     if (!source_stamp_is_acceptable(
-        message->header.stamp, receipt_time.nanoseconds(), last_odom_source_stamp_,
-        has_last_odom_source_stamp_, odom_counters_))
+        message->header.stamp, receipt_time.nanoseconds(), receipt_seconds,
+        *odom_stamp_gate_, odom_counters_, source_stamp_reinitialized))
     {
       release_motion_constraints();
       return;
     }
+    if (source_stamp_reinitialized) {
+      odom_gate_.reset();
+      odom_angular_gate_.reset();
+      release_motion_constraints();
+    }
+
+    const double source_seconds =
+      static_cast<double>(stamp_nanoseconds(message->header.stamp)) * 1.0e-9;
 
     const GateResult linear_result = odom_gate_.evaluate(
-      message->twist.twist.linear.x, receipt_seconds);
+      message->twist.twist.linear.x, source_seconds);
     if (linear_result != GateResult::kAccepted) {
       count_rejection(linear_result, odom_counters_);
       release_motion_constraints();
       return;
     }
     const GateResult angular_result = odom_angular_gate_.evaluate(
-      message->twist.twist.angular.z, receipt_seconds);
+      message->twist.twist.angular.z, source_seconds);
     if (angular_result != GateResult::kAccepted) {
       count_rejection(angular_result, odom_counters_);
       release_motion_constraints();
@@ -292,14 +307,11 @@ private:
     }
 
     const MotionPhase phase = motion_state_machine_.update(
-      message->twist.twist.linear.x, message->twist.twist.angular.z, receipt_seconds);
+      message->twist.twist.linear.x, message->twist.twist.angular.z, source_seconds);
     motion_phase_ = phase;
     stationary_constraint_active_ = phase == MotionPhase::kStationary;
 
     auto output = *message;
-    if (retimestamp_with_receipt_time_) {
-      output.header.stamp = receipt_time;
-    }
     // EKF 使用轮式 vx 和 vyaw。将 MCU 位姿及其余速度维度明确标为未使用，
     // 避免全 0 协方差被其他消费者误解为“完全可信”。
     if (stationary_constraint_active_) {
@@ -339,23 +351,26 @@ private:
     ++imu_counters_.received;
     imu_counters_.last_receive_seconds = receipt_seconds;
 
+    bool source_stamp_reinitialized = false;
     if (!source_stamp_is_acceptable(
-        message->header.stamp, receipt_time.nanoseconds(), last_imu_source_stamp_,
-        has_last_imu_source_stamp_, imu_counters_))
+        message->header.stamp, receipt_time.nanoseconds(), receipt_seconds,
+        *imu_stamp_gate_, imu_counters_, source_stamp_reinitialized))
     {
       return;
     }
+    if (source_stamp_reinitialized) {
+      imu_gate_.reset();
+    }
 
-    const GateResult result = imu_gate_.evaluate(message->angular_velocity.z, receipt_seconds);
+    const double source_seconds =
+      static_cast<double>(stamp_nanoseconds(message->header.stamp)) * 1.0e-9;
+    const GateResult result = imu_gate_.evaluate(message->angular_velocity.z, source_seconds);
     if (result != GateResult::kAccepted) {
       count_rejection(result, imu_counters_);
       return;
     }
 
     auto output = *message;
-    if (retimestamp_with_receipt_time_) {
-      output.header.stamp = receipt_time;
-    }
     // imu_link 与 base_link 固定关节且 rpy=0 完全对齐（URDF imu_joint）。
     // 直接声明为 base_link，避免 EKF 因缺少 imu_link->base_link TF 丢弃 IMU。
     output.header.frame_id = "base_link";
@@ -400,6 +415,7 @@ private:
     add_value(status, "rejected_rate", std::to_string(counters.rejected_rate));
     add_value(status, "rejected_timestamp", std::to_string(counters.rejected_timestamp));
     add_value(status, "source_stamp_anomalies", std::to_string(counters.source_stamp_anomalies));
+    add_value(status, "source_stamp_resets", std::to_string(counters.source_stamp_resets));
     add_value(status, "last_message_age_seconds", std::to_string(age));
     return status;
   }
@@ -436,18 +452,15 @@ private:
   double arc_odom_wz_stddev_{0.08};
   double imu_gyro_z_stddev_{0.08};
   double max_source_stamp_offset_{0.25};
+  double source_stamp_reset_after_gap_{1.0};
   double diagnostic_timeout_{0.3};
-  bool retimestamp_with_receipt_time_{true};
-  bool require_monotonic_stamp_{true};
   bool stationary_constraint_active_{false};
   MotionPhase motion_phase_{MotionPhase::kStraight};
 
   GateCounters odom_counters_;
   GateCounters imu_counters_;
-  std::int64_t last_odom_source_stamp_{0};
-  std::int64_t last_imu_source_stamp_{0};
-  bool has_last_odom_source_stamp_{false};
-  bool has_last_imu_source_stamp_{false};
+  std::unique_ptr<SourceStampGate> odom_stamp_gate_;
+  std::unique_ptr<SourceStampGate> imu_stamp_gate_;
 
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;

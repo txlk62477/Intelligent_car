@@ -3,6 +3,7 @@
 #include "msg/imu_msg.h"
 
 #include "esp_log.h" // 确保包含了日志打印头文件
+#include "esp_timer.h"
 
 void imu_task(void *p) {
     ImuMsg msg;
@@ -20,6 +21,7 @@ void imu_task(void *p) {
         msg.gyro_x = imu.GetGyroX();
         msg.gyro_y = imu.GetGyroY();
         msg.gyro_z = imu.GetGyroZ();
+        msg.sample_time_us = esp_timer_get_time();
 
         xQueueOverwrite(q_imu_state, &msg);
 

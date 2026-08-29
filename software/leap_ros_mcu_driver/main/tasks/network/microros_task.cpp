@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
@@ -107,6 +108,10 @@ static bool s_wait_set_initialized = false;
 static uint32_t s_publish_tick = 0;
 static TickType_t s_last_agent_check_tick = 0;
 static bool s_ros_session_error = false;
+static bool s_epoch_offset_valid = false;
+static int64_t s_epoch_offset_ns = 0;
+static int64_t s_last_published_odom_sample_us = 0;
+static int64_t s_last_published_imu_sample_us = 0;
 
 #define RCCHECK(fn) do { \
     rcl_ret_t rc = (fn); \
@@ -297,18 +302,33 @@ static void spin_pid_services() {
     }
 }
 
-static void set_stamp(std_msgs__msg__Header *header, int64_t stamp_ms) {
-    header->stamp.sec = static_cast<int32_t>(stamp_ms / 1000);
-    header->stamp.nanosec = static_cast<uint32_t>((stamp_ms % 1000) * 1000000);
+static bool monotonic_us_to_epoch_ns(int64_t monotonic_us, int64_t *epoch_ns) {
+    if (!s_epoch_offset_valid || monotonic_us <= 0 || epoch_ns == nullptr) {
+        return false;
+    }
+    *epoch_ns = s_epoch_offset_ns + monotonic_us * 1000;
+    return *epoch_ns > 0;
 }
 
-static void publish_odom(int64_t stamp_ms) {
+static void set_stamp(std_msgs__msg__Header *header, int64_t stamp_ns) {
+    header->stamp.sec = static_cast<int32_t>(stamp_ns / 1000000000LL);
+    header->stamp.nanosec = static_cast<uint32_t>(stamp_ns % 1000000000LL);
+}
+
+static void publish_odom() {
     MotionMsg motion = {};
     if (q_motion_state == nullptr || xQueuePeek(q_motion_state, &motion, 0) != pdTRUE) {
         return;
     }
+    if (motion.sample_time_us <= s_last_published_odom_sample_us) {
+        return;
+    }
+    int64_t stamp_ns = 0;
+    if (!monotonic_us_to_epoch_ns(motion.sample_time_us, &stamp_ns)) {
+        return;
+    }
 
-    set_stamp(&s_odom_msg.header, stamp_ms);
+    set_stamp(&s_odom_msg.header, stamp_ns);
     s_odom_msg.pose.pose.position.x = motion.x / 1000.0;
     s_odom_msg.pose.pose.position.y = motion.y / 1000.0;
     s_odom_msg.pose.pose.position.z = 0.0;
@@ -319,16 +339,24 @@ static void publish_odom(int64_t stamp_ms) {
     s_odom_msg.twist.twist.linear.x = motion.vx / 1000.0;
     s_odom_msg.twist.twist.linear.y = motion.vy / 1000.0;
     s_odom_msg.twist.twist.angular.z = motion.wz;
+    s_last_published_odom_sample_us = motion.sample_time_us;
     RCPUBLISHCHECK(rcl_publish(&s_odom_publisher, &s_odom_msg, nullptr));
 }
 
-static void publish_imu(int64_t stamp_ms) {
+static void publish_imu() {
     ImuMsg imu = {};
     if (q_imu_state == nullptr || xQueuePeek(q_imu_state, &imu, 0) != pdTRUE) {
         return;
     }
+    if (imu.sample_time_us <= s_last_published_imu_sample_us) {
+        return;
+    }
+    int64_t stamp_ns = 0;
+    if (!monotonic_us_to_epoch_ns(imu.sample_time_us, &stamp_ns)) {
+        return;
+    }
 
-    set_stamp(&s_imu_msg.header, stamp_ms);
+    set_stamp(&s_imu_msg.header, stamp_ns);
     s_imu_msg.orientation.w = imu.qw;
     s_imu_msg.orientation.x = imu.qx;
     s_imu_msg.orientation.y = imu.qy;
@@ -339,16 +367,17 @@ static void publish_imu(int64_t stamp_ms) {
     s_imu_msg.linear_acceleration.x = imu.acc_x * kGravity;
     s_imu_msg.linear_acceleration.y = imu.acc_y * kGravity;
     s_imu_msg.linear_acceleration.z = imu.acc_z * kGravity;
+    s_last_published_imu_sample_us = imu.sample_time_us;
     RCPUBLISHCHECK(rcl_publish(&s_imu_publisher, &s_imu_msg, nullptr));
 }
 
-static void publish_scan(int64_t stamp_ms) {
+static void publish_scan(int64_t stamp_ns) {
     LidarMsg lidar = {};
     if (q_lidar_state == nullptr || xQueuePeek(q_lidar_state, &lidar, 0) != pdTRUE) {
         return;
     }
 
-    set_stamp(&s_scan_msg.header, stamp_ms);
+    set_stamp(&s_scan_msg.header, stamp_ns);
     for (size_t i = 0; i < kLaserScanPointCount; ++i) {
         s_scan_msg.ranges.data[i] = lidar.distances[i] > 0
             ? static_cast<float>(lidar.distances[i]) / 1000.0f
@@ -357,14 +386,14 @@ static void publish_scan(int64_t stamp_ms) {
     RCPUBLISHCHECK(rcl_publish(&s_scan_publisher, &s_scan_msg, nullptr));
 }
 
-static void publish_battery(int64_t stamp_ms) {
+static void publish_battery(int64_t stamp_ns) {
     BatteryMsg battery = {};
     if (q_battery_state == nullptr || xQueuePeek(q_battery_state, &battery, 0) != pdTRUE ||
         !battery.valid) {
         return;
     }
 
-    set_stamp(&s_battery_msg.header, stamp_ms);
+    set_stamp(&s_battery_msg.header, stamp_ns);
     s_battery_msg.voltage = battery.voltage_v;
     s_battery_msg.temperature = NAN;
     s_battery_msg.current = NAN;
@@ -382,14 +411,14 @@ static void publish_battery(int64_t stamp_ms) {
     RCPUBLISHCHECK(rcl_publish(&s_battery_publisher, &s_battery_msg, nullptr));
 }
 
-static void publish_ultrasonic(int64_t stamp_ms) {
+static void publish_ultrasonic(int64_t stamp_ns) {
     UltrasonicMsg ultrasonic = {};
     if (q_ultrasonic_state == nullptr ||
         xQueuePeek(q_ultrasonic_state, &ultrasonic, 0) != pdTRUE) {
         return;
     }
 
-    set_stamp(&s_ultrasonic_msg.header, stamp_ms);
+    set_stamp(&s_ultrasonic_msg.header, stamp_ns);
     s_ultrasonic_msg.range = ultrasonic.distance_cm > 0.0f
         ? ultrasonic.distance_cm / 100.0f
         : NAN;
@@ -401,14 +430,21 @@ static void publish_state_timer(rcl_timer_t *timer, int64_t) {
         return;
     }
 
-    const int64_t stamp_ms = rmw_uros_epoch_millis();
-    publish_odom(stamp_ms);
-    publish_imu(stamp_ms);
+    if (!s_epoch_offset_valid) {
+        return;
+    }
+
+    publish_odom();
+    publish_imu();
 
     if ((++s_publish_tick % 5) == 0) {
-        publish_scan(stamp_ms);
-        publish_battery(stamp_ms);
-        publish_ultrasonic(stamp_ms);
+        int64_t stamp_ns = 0;
+        if (!monotonic_us_to_epoch_ns(esp_timer_get_time(), &stamp_ns)) {
+            return;
+        }
+        publish_scan(stamp_ns);
+        publish_battery(stamp_ns);
+        publish_ultrasonic(stamp_ns);
     }
 }
 
@@ -438,6 +474,10 @@ static bool create_ros_entities() {
     s_publish_tick = 0;
     s_last_agent_check_tick = xTaskGetTickCount();
     s_ros_session_error = false;
+    s_epoch_offset_valid = false;
+    s_epoch_offset_ns = 0;
+    s_last_published_odom_sample_us = 0;
+    s_last_published_imu_sample_us = 0;
     reset_ros_handles();
 
     rosidl_runtime_c__String__init(&s_odom_msg.header.frame_id);
@@ -501,9 +541,27 @@ static bool create_ros_entities() {
     RCCHECK(rcl_init(0, nullptr, &s_init_options, &s_context));
     s_context_initialized = true;
 
-    if (!rmw_uros_epoch_synchronized()) {
-        (void)rmw_uros_sync_session(1000);
+    // 每次新建会话都重新同步一次；会话内则保持下面计算出的固定偏移不变。
+    if (rmw_uros_sync_session(1000) != RMW_RET_OK) {
+        ESP_LOGW(TAG, "micro-ROS time synchronization failed");
+        return false;
     }
+    if (!rmw_uros_epoch_synchronized()) {
+        ESP_LOGW(TAG, "micro-ROS time synchronization unavailable");
+        return false;
+    }
+
+    // 固定一次 ROS epoch 与 esp_timer 单调时钟的映射。会话内不再调整，
+    // 避免 CLOCK_REALTIME 或 Agent 时间变化让传感器时间戳发生回退。
+    const int64_t monotonic_before_ns = esp_timer_get_time() * 1000;
+    const int64_t epoch_ns = rmw_uros_epoch_nanos();
+    const int64_t monotonic_after_ns = esp_timer_get_time() * 1000;
+    if (epoch_ns <= 0) {
+        ESP_LOGW(TAG, "micro-ROS returned invalid epoch time");
+        return false;
+    }
+    s_epoch_offset_ns = epoch_ns - (monotonic_before_ns + monotonic_after_ns) / 2;
+    s_epoch_offset_valid = true;
 
     s_node = rcl_get_zero_initialized_node();
     rcl_node_options_t node_options = rcl_node_get_default_options();
@@ -525,7 +583,7 @@ static bool create_ros_entities() {
         &s_node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
         "odom",
-        &pub_options));
+        &sensor_pub_options));
     s_odom_publisher_initialized = true;
 
     s_imu_publisher = rcl_get_zero_initialized_publisher();
@@ -724,6 +782,10 @@ static void destroy_ros_entities() {
 
     s_ros_created = false;
     s_ros_session_error = false;
+    s_epoch_offset_valid = false;
+    s_epoch_offset_ns = 0;
+    s_last_published_odom_sample_us = 0;
+    s_last_published_imu_sample_us = 0;
     reset_ros_handles();
 }
 
