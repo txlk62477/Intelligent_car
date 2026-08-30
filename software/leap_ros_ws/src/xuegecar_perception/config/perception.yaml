@@ -5,7 +5,7 @@ yolo_detect_node:
     annotated_topic: "/vision/annotated/compressed"
     annotated_raw_topic: "/vision/annotated"
     publish_annotated_raw: false
-    model_path: "/home/lk/car/test/yolo_detection/models/yolov8n.onnx"
+    model_path: "/home/lk/car/test/yolo_detection/models/yolov8s.onnx"
     yolo_module_dir: "/home/lk/car/test/yolo_detection"
     imgsz: 640
     conf: 0.25
