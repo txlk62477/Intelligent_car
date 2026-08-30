@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = "xuegecar_agent_bridge"
+package_name = "xuegecar_motion_controller"
 
 setup(
     name=package_name,
@@ -19,12 +19,12 @@ setup(
     zip_safe=True,
     maintainer="lk",
     maintainer_email="lk@example.com",
-    description="Safe HTTP gateway between LangGraph and xuegecar ROS2 topics.",
+    description="Exclusive ROS2 motion and visual-follow controller for xuegecar.",
     license="GPL-2.0-only",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "gateway = xuegecar_agent_bridge.node:main",
+            "motion_controller = xuegecar_motion_controller.node:main",
         ],
     },
 )

@@ -10,11 +10,13 @@ from threading import Thread
 from typing import Any
 from urllib.parse import unquote
 
-from xuegecar_agent_bridge.controller import MotionRejected
+from xuegecar_agent_bridge.errors import GatewayRejected
 
 MAX_BODY_BYTES = 64 * 1024
 # operation_id 只能占据最后一个路径段，避免把额外的子路径误当成动作 ID。
 OPERATION_PATH = re.compile(r"^/v1/motions/([^/]+)$")
+FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)$")
+CANCEL_FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)/cancel$")
 
 
 class GatewayHttpServer:
@@ -28,6 +30,9 @@ class GatewayHttpServer:
         status: Callable[[], dict[str, Any]],
         operation: Callable[[str], dict[str, Any] | None],
         submit: Callable[[dict[str, Any]], dict[str, Any]],
+        follow_operation: Callable[[str], dict[str, Any] | None],
+        submit_follow: Callable[[dict[str, Any]], dict[str, Any]],
+        cancel_follow: Callable[[str], dict[str, Any]],
         stop: Callable[[], dict[str, Any]],
     ) -> None:
         # Handler 通过闭包持有这些业务回调。HTTP 层只处理协议，不依赖 ROS2。
@@ -35,6 +40,9 @@ class GatewayHttpServer:
             status=status,
             operation=operation,
             submit=submit,
+            follow_operation=follow_operation,
+            submit_follow=submit_follow,
+            cancel_follow=cancel_follow,
             stop=stop,
         )
         # 每个 HTTP 请求可由独立线程处理；真正的运动状态由 node.py 负责同步。
@@ -71,13 +79,16 @@ def _handler_factory(
     status: Callable[[], dict[str, Any]],
     operation: Callable[[str], dict[str, Any] | None],
     submit: Callable[[dict[str, Any]], dict[str, Any]],
+    follow_operation: Callable[[str], dict[str, Any] | None],
+    submit_follow: Callable[[dict[str, Any]], dict[str, Any]],
+    cancel_follow: Callable[[str], dict[str, Any]],
     stop: Callable[[], dict[str, Any]],
 ) -> type[BaseHTTPRequestHandler]:
     # 工厂把节点提供的回调封装进 Handler 类，避免使用全局节点对象。
     class Handler(BaseHTTPRequestHandler):
         server_version = "XuegecarAgentGateway/0.1"
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             # 查询接口只读取节点维护的快照，不直接访问 ROS2 控制器。
             if self.path == "/v1/robot/status":
                 self._write_json(200, status())
@@ -95,14 +106,32 @@ def _handler_factory(
                 else:
                     self._write_json(200, result)
                 return
+            match = FOLLOW_PATH.fullmatch(self.path)
+            if match:
+                operation_id = unquote(match.group(1))
+                result = follow_operation(operation_id)
+                if result is None:
+                    self._write_json(
+                        404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"}
+                    )
+                else:
+                    self._write_json(200, result)
+                return
             self._write_json(404, {"error_code": "NOT_FOUND", "error": "接口不存在"})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             try:
                 if self.path == "/v1/motions":
                     # 读取 Agent 的动作 JSON，再通过 submit 回调交给 ROS2 节点。
                     # 202 表示动作已被接受，最终结果仍需通过 GET 接口轮询。
                     self._write_json(202, submit(self._read_json()))
+                    return
+                if self.path == "/v1/follow-tasks":
+                    self._write_json(202, submit_follow(self._read_json()))
+                    return
+                match = CANCEL_FOLLOW_PATH.fullmatch(self.path)
+                if match:
+                    self._write_json(200, cancel_follow(unquote(match.group(1))))
                     return
                 if self.path == "/v1/stop":
                     # 停车也走节点回调，以保证取消动作与发布零速度在 ROS 主线程处理。
@@ -111,13 +140,24 @@ def _handler_factory(
                 self._write_json(
                     404, {"error_code": "NOT_FOUND", "error": "接口不存在"}
                 )
-            except MotionRejected as error:
-                # 冲突类错误使用 409，其他确定性动作校验错误使用 422。
-                status_code = 409 if error.code in {"BUSY", "ID_CONFLICT"} else 422
+            except GatewayRejected as error:
+                if error.code in {"BUSY", "ID_CONFLICT"}:
+                    status_code = 409
+                elif error.code == "NOT_FOUND":
+                    status_code = 404
+                elif error.code in {"UNAVAILABLE", "GATEWAY_TIMEOUT"}:
+                    status_code = 503
+                else:
+                    status_code = 422
                 self._write_json(
                     status_code, {"error_code": error.code, "error": str(error)}
                 )
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                UnicodeDecodeError,
+                ValueError,
+            ) as error:
                 self._write_json(
                     400, {"error_code": "INVALID_JSON", "error": str(error)}
                 )
@@ -136,7 +176,7 @@ def _handler_factory(
                 raise ValueError("请求体大小无效")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
-                raise ValueError("JSON 顶层必须是对象")
+                raise TypeError("JSON 顶层必须是对象")
             return payload
 
         def _write_json(self, status_code: int, payload: dict[str, Any]) -> None:

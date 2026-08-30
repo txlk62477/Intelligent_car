@@ -1,5 +1,5 @@
-from glob import glob
 import os
+from glob import glob
 
 from setuptools import find_packages, setup
 
@@ -24,6 +24,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "perception_manager = xuegecar_perception.manager_node:main",
             "yolo_detect_node = xuegecar_perception.yolo_detect_node:main",
             "sim_camera_publisher = xuegecar_perception.sim_camera_publisher:main",
         ],

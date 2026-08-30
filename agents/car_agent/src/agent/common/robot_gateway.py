@@ -39,6 +39,18 @@ class RobotGateway(Protocol):
         """无条件请求立即停车。"""
         ...
 
+    def submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交按类别跟随目标的任务。"""
+        ...
+
+    def get_follow(self, operation_id: str) -> dict[str, Any]:
+        """查询视觉跟随任务状态。"""
+        ...
+
+    def cancel_follow(self, operation_id: str) -> dict[str, Any]:
+        """取消指定视觉跟随任务。"""
+        ...
+
 
 class HttpRobotGateway:
     """通过本机 JSON/HTTP 调用 ROS2 Gateway。"""
@@ -63,6 +75,22 @@ class HttpRobotGateway:
     def stop(self) -> dict[str, Any]:
         """无条件请求立即停车。"""
         return self._request("POST", "/v1/stop", {})
+
+    def submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建视觉跟随任务。"""
+        return self._request("POST", "/v1/follow-tasks", payload)
+
+    def get_follow(self, operation_id: str) -> dict[str, Any]:
+        """查询视觉跟随任务。"""
+        return self._request(
+            "GET", f"/v1/follow-tasks/{quote(operation_id, safe='')}"
+        )
+
+    def cancel_follow(self, operation_id: str) -> dict[str, Any]:
+        """取消视觉跟随任务。"""
+        return self._request(
+            "POST", f"/v1/follow-tasks/{quote(operation_id, safe='')}/cancel", {}
+        )
 
     def _request(
         self,

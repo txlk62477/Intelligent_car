@@ -1,0 +1,8 @@
+# enabled=true 启动 YOLO；false 停止并释放资源
+bool enabled
+float32 max_runtime_seconds
+---
+bool success
+string state
+string error_code
+string error

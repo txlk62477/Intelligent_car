@@ -1,0 +1,13 @@
+# 执行一个相对移动动作
+string operation_id
+string type
+string mode
+float64 value
+---
+string status
+float64 progress
+string error_code
+string error
+---
+string status
+float64 progress

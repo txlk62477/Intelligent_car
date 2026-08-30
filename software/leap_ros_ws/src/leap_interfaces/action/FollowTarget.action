@@ -1,0 +1,24 @@
+# 按检测类别持续跟随一个目标
+string operation_id
+string target_label
+float32 timeout_seconds
+---
+string status
+float32 elapsed_seconds
+bool target_visible
+float32 confidence
+float32 center_error
+float32 area_ratio
+float32 linear_x
+float32 angular_z
+string error_code
+string error
+---
+string status
+float32 elapsed_seconds
+bool target_visible
+float32 confidence
+float32 center_error
+float32 area_ratio
+float32 linear_x
+float32 angular_z

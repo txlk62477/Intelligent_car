@@ -1,0 +1,38 @@
+xuegecar_motion_controller:
+  ros__parameters:
+    odom_topic: "/odometry/filtered"
+    cmd_vel_topic: "/cmd_vel"
+    detections_topic: "/vision/detections"
+    control_rate_hz: 20.0
+
+    linear_speed: 0.27
+    angular_speed: 0.53
+    min_distance: 0.05
+    max_distance: 3.0
+    min_duration: 0.1
+    max_duration: 10.0
+    min_angle_degrees: 1.0
+    max_angle_degrees: 180.0
+    distance_tolerance: 0.03
+    angle_tolerance_degrees: 3.0
+    odom_timeout: 1.0
+    action_timeout: 60.0
+    slow_down_ratio: 0.35
+    stop_publish_count: 5
+    history_size: 100
+
+    follow_default_timeout: 60.0
+    follow_max_timeout: 300.0
+    follow_startup_timeout: 30.0
+    follow_search_timeout: 10.0
+    detection_timeout: 0.75
+    min_detection_confidence: 0.5
+    stable_frames: 3
+    center_deadzone: 0.10
+    area_deadzone: 0.15
+    follow_max_linear_speed: 0.12
+    follow_max_angular_speed: 0.35
+    follow_linear_kp: 0.35
+    follow_angular_kp: 0.70
+    follow_min_linear_speed: 0.04
+    follow_min_angular_speed: 0.10

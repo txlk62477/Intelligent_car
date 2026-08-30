@@ -1,0 +1,6 @@
+perception_manager:
+  ros__parameters:
+    launch_package: "xuegecar_perception"
+    launch_file: "perception.launch.py"
+    max_runtime_seconds: 300.0
+    stop_timeout_seconds: 5.0

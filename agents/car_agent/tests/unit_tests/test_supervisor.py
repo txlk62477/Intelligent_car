@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
+import agent.tools.perception as perception_tools
 import agent.tools.robot as robot_tools
 import agent.tools.vision as vision_tools
 from agent.supervisor.graph import build_car_agent_graph
@@ -72,6 +74,15 @@ async def test_status_tool_routes_to_gateway(
         ]
     )
     gateway = FakeRobotGateway()
+    event_loop_thread = threading.get_ident()
+    gateway_thread_ids: list[int] = []
+    original_get_status = gateway.get_status
+
+    def get_status() -> dict[str, Any]:
+        gateway_thread_ids.append(threading.get_ident())
+        return original_get_status()
+
+    monkeypatch.setattr(gateway, "get_status", get_status)
     _patch_direct_gateway(monkeypatch, gateway)
     app = _build_app(model, gateway)
 
@@ -79,6 +90,7 @@ async def test_status_tool_routes_to_gateway(
         {"messages": [("user", "小车在线吗？")]}, config=_config("sup-2")
     )
     assert gateway.status_calls == 1
+    assert gateway_thread_ids != [event_loop_thread]
     tools = _tool_messages(result)
     assert len(tools) == 1
     assert tools[0].name == "get_robot_status"
@@ -261,3 +273,32 @@ def test_supervisor_binds_image_recognition_tool() -> None:
     names = {tool.name for tool in model.bound_tools}
 
     assert "recognize_image" in names
+    assert "start_follow_target" in names
+    assert "get_follow_task_status" in names
+    assert "cancel_follow_task" in names
+
+
+async def test_follow_tool_submits_high_level_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = FakeRobotGateway()
+    monkeypatch.setattr(perception_tools, "get_robot_gateway", lambda: gateway)
+    model = FakeChatModel(
+        [
+            tool_call_ai(
+                "start_follow_target",
+                {"target_label": "cup", "timeout_seconds": 60},
+            ),
+            AIMessage(content="已开始跟随水杯。"),
+        ]
+    )
+    app = _build_app(model, gateway)
+
+    result = await app.ainvoke(
+        {"messages": [("user", "跟随水杯")]}, config=_config("sup-follow-1")
+    )
+
+    assert len(gateway.follow_submitted) == 1
+    assert gateway.follow_submitted[0]["target_label"] == "cup"
+    assert gateway.follow_submitted[0]["timeout_seconds"] == 60
+    assert result["messages"][-1].content == "已开始跟随水杯。"

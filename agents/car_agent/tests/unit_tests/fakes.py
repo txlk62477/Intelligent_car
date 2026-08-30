@@ -25,6 +25,8 @@ class FakeRobotGateway:
             key: list(value) for key, value in (poll_scripts or {}).items()
         }
         self._records: dict[str, dict[str, Any]] = {}
+        self.follow_submitted: list[dict[str, Any]] = []
+        self._follow_records: dict[str, dict[str, Any]] = {}
 
     def get_status(self) -> dict[str, Any]:
         self.status_calls += 1
@@ -72,7 +74,50 @@ class FakeRobotGateway:
                         "error": "收到停止请求",
                     }
                 )
+        for record in self._follow_records.values():
+            if record.get("status") not in {
+                "SUCCEEDED",
+                "FAILED",
+                "TIMED_OUT",
+                "CANCELLED",
+            }:
+                record.update(
+                    {
+                        "status": "CANCELLED",
+                        "error_code": "CANCELLED",
+                        "error": "收到停止请求",
+                    }
+                )
         return {"gateway_status": "IDLE"}
+
+    def submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建内存视觉跟随记录。"""
+        operation_id = str(payload["operation_id"])
+        previous = self._follow_records.get(operation_id)
+        if previous is not None:
+            return previous
+        self.follow_submitted.append(payload)
+        record = {
+            **payload,
+            "kind": "follow",
+            "status": "STARTING",
+            "target_visible": False,
+        }
+        self._follow_records[operation_id] = record
+        return record
+
+    def get_follow(self, operation_id: str) -> dict[str, Any]:
+        """查询内存视觉跟随记录。"""
+        try:
+            return self._follow_records[operation_id]
+        except KeyError as error:
+            raise RobotGatewayError("NOT_FOUND", "未知 operation_id") from error
+
+    def cancel_follow(self, operation_id: str) -> dict[str, Any]:
+        """取消内存视觉跟随记录。"""
+        record = self.get_follow(operation_id)
+        record.update({"status": "CANCELLED", "error_code": "CANCELLED"})
+        return record
 
 
 class FailingRobotGateway(FakeRobotGateway):

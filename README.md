@@ -51,12 +51,14 @@ source install/setup.bash
 
 ## LangGraph 智能 Agent 与 Robot Gateway
 
-当前架构由两个独立进程组成，中间以本机 HTTP JSON 衔接：
+当前架构由 LangGraph 与三个 ROS2 节点组成，中间以本机 HTTP JSON 和 ROS2 Action 衔接：
 
-- **LangGraph Agent Server**（`agents/car_agent`）：Supervisor 负责问答、状态查询、立即停车，以及把短距离相对运动（前进/后退/左转/右转，按距离/角度/时间）翻译成结构化动作列表，交给固定子图。子图先展示完整计划并等待人工确认，再逐条提交给 Robot Gateway，等待每个动作终态后执行下一个；任何失败都会停止剩余动作并回报失败步骤。
-- **Robot Gateway**（`software/leap_ros_ws/src/xuegecar_agent_bridge`）：ROS2 Python 功能包，订阅 `/odom`、发布 `/cmd_vel`，在 ROS 主线程独占执行闭环控制（距离投影、跨 ±π 航向累计、接近目标降速、超时与断联急停），HTTP 线程只通过线程安全队列提交命令、读取状态快照。
+- **LangGraph Agent Server**（`agents/car_agent`）：Supervisor 负责问答、状态、急停、短距离相对运动，以及创建、查询和取消按目标类别运行的视觉跟随任务。
+- **Robot Gateway**（`software/leap_ros_ws/src/xuegecar_agent_bridge`）：只负责 HTTP/ROS2 协议适配和状态汇总，通过 ROS2 Action 提交任务，不直接发布速度。
+- **Motion Controller**（`software/leap_ros_ws/src/xuegecar_motion_controller`）：独占 `/cmd_vel`，执行相对位置控制和低速视觉跟随；同一时间只接受一个任务，急停除外。
+- **Perception Manager**（`software/leap_ros_ws/src/xuegecar_perception`）：空闲时不加载 YOLO；视觉任务开始时启动 YOLO 子进程，任务结束、取消或超时后关闭进程并释放资源。
 
-LangGraph 侧通过 `ROBOT_GATEWAY_URL`（默认 `http://127.0.0.1:8765`）调用 Gateway，不直接发布速度。第一版不使用雷达、摄像头数据，不包含避障；超过 3 米的长距离运动会被拒绝，后续交给 Nav2 Workflow。
+LangGraph 侧通过 `ROBOT_GATEWAY_URL`（默认 `http://127.0.0.1:8765`）调用 Gateway，不直接发布速度。视觉跟随根据目标框中心和相对初始面积控制方向与前后距离，默认运行 60 秒、最大 300 秒；当前不使用雷达避障。超过 3 米的长距离运动仍会被拒绝，后续交给 Nav2 Workflow。
 
 ### 首次安装（Agent）
 
@@ -83,7 +85,12 @@ langgraph dev --no-browser
 ```
 
 - Agent Server：`http://127.0.0.1:2024`，接口文档 `http://127.0.0.1:2024/docs`
-- Robot Gateway：`http://127.0.0.1:8765`（`GET /v1/robot/status`、`POST /v1/motions`、`GET /v1/motions/{id}`、`POST /v1/stop`）
+- Robot Gateway：`http://127.0.0.1:8765`
+  - `GET /v1/robot/status`
+  - `POST /v1/motions`、`GET /v1/motions/{id}`
+  - `POST /v1/follow-tasks`、`GET /v1/follow-tasks/{id}`
+  - `POST /v1/follow-tasks/{id}/cancel`
+  - `POST /v1/stop`
 
 实车运动需单独启动 Gateway 并确认周边安全；验证阶段不会主动让真实小车移动。
 
@@ -96,12 +103,16 @@ cd /home/lk/car/agents/car_agent
 .venv/bin/mypy src
 .venv/bin/python -m pytest tests/ -q          # 联网集成测试在未配置真实密钥时自动跳过
 
-# Gateway：纯控制与 HTTP 接口测试 + 构建
-cd /home/lk/car/software/leap_ros_ws/src/xuegecar_agent_bridge
-python3 -m pytest test/ -q
+# ROS2：控制核心与 HTTP 接口测试 + 构建
+cd /home/lk/car/software/leap_ros_ws
+PYTHONPATH=src/xuegecar_motion_controller python3 -m pytest \
+  src/xuegecar_motion_controller/test -q
+PYTHONPATH=src/xuegecar_agent_bridge python3 -m pytest \
+  src/xuegecar_agent_bridge/test -q
 cd /home/lk/car/software/leap_ros_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select xuegecar_agent_bridge --symlink-install
+colcon build --packages-select leap_interfaces xuegecar_perception \
+  xuegecar_motion_controller xuegecar_agent_bridge --symlink-install
 ```
 
 `.env`、虚拟环境和 LangGraph 本地状态均不会提交到 Git。

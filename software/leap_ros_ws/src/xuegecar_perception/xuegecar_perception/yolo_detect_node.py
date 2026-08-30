@@ -21,9 +21,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import rclpy
+from leap_interfaces.msg import Detection, Detections
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from leap_interfaces.msg import Detection, Detections
 from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Header
 
@@ -82,7 +82,7 @@ class YoloDetectNode(Node):
         resolved = str(Path(module_dir).expanduser().resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
-        from yolo_detect.detector import YoloDetector, draw_detections  # noqa: E402
+        from yolo_detect.detector import YoloDetector, draw_detections
 
         model_path = self.get_parameter("model_path").get_parameter_value().string_value
         if not Path(model_path).is_file():
@@ -167,7 +167,7 @@ class YoloDetectNode(Node):
         self.get_logger().info(f"GPU 预热完成，平均 {outcome['avg_ms']:.1f}ms")
 
     def _fallback_to_cpu(self) -> None:
-        from yolo_detect.detector import YoloDetector  # noqa: E402
+        from yolo_detect.detector import YoloDetector
 
         self.detector = YoloDetector(
             model_path=self._model_path,
@@ -197,6 +197,8 @@ class YoloDetectNode(Node):
         detections_msg.header = Header()
         detections_msg.header.stamp = msg.header.stamp  # 保留源帧时间戳
         detections_msg.header.frame_id = msg.header.frame_id
+        detections_msg.image_width = int(frame.shape[1])
+        detections_msg.image_height = int(frame.shape[0])
         detections_msg.inference_ms = float(result.inference_ms)
         detections_msg.total_ms = float(total_ms)
         for det in result.detections:
@@ -255,13 +257,18 @@ class YoloDetectNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = YoloDetectNode()
+    node = None
     try:
+        node = YoloDetectNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        if node is not None:
+            try:
+                node.destroy_node()
+            except KeyboardInterrupt:
+                pass
         if rclpy.ok():
             rclpy.shutdown()
 

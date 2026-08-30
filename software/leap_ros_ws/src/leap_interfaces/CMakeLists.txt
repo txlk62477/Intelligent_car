@@ -6,9 +6,12 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/ExecuteMotion.action"
+  "action/FollowTarget.action"
   "msg/Detection.msg"
   "msg/Detections.msg"
   "srv/GetSpeedPid.srv"
+  "srv/SetPerception.srv"
   "srv/SetSpeedPid.srv"
   DEPENDENCIES std_msgs
 )

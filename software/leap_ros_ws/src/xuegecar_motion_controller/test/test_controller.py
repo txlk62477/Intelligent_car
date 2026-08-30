@@ -1,8 +1,7 @@
 import math
 
 import pytest
-
-from xuegecar_agent_bridge.controller import (
+from xuegecar_motion_controller.controller import (
     ControllerConfig,
     MotionCommand,
     MotionController,

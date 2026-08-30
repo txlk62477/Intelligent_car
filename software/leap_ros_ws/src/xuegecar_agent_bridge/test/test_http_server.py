@@ -2,7 +2,7 @@ import json
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from xuegecar_agent_bridge.controller import MotionRejected
+from xuegecar_agent_bridge.errors import GatewayRejected
 from xuegecar_agent_bridge.http_server import GatewayHttpServer
 
 
@@ -31,6 +31,9 @@ def test_http_routes_status_submit_operation_and_stop():
         status=lambda: {"online": True},
         operation=operations.get,
         submit=submit,
+        follow_operation=lambda operation_id: operations.get(operation_id),
+        submit_follow=submit,
+        cancel_follow=lambda operation_id: operations[operation_id],
         stop=lambda: {"gateway_status": "IDLE"},
     )
     server.start()
@@ -53,6 +56,24 @@ def test_http_routes_status_submit_operation_and_stop():
         assert request_json(base_url, "/v1/motions/plan-1%3A0")[1]["status"] == (
             "RUNNING"
         )
+        follow_status, _follow = request_json(
+            base_url,
+            "/v1/follow-tasks",
+            payload={
+                "operation_id": "follow-1",
+                "target_label": "cup",
+                "timeout_seconds": 60,
+            },
+        )
+        assert follow_status == 202
+        assert request_json(base_url, "/v1/follow-tasks/follow-1")[1][
+            "target_label"
+        ] == "cup"
+        assert request_json(
+            base_url,
+            "/v1/follow-tasks/follow-1/cancel",
+            payload={},
+        )[1]["operation_id"] == "follow-1"
         assert request_json(base_url, "/v1/stop", payload={})[1] == {
             "gateway_status": "IDLE"
         }
@@ -62,7 +83,7 @@ def test_http_routes_status_submit_operation_and_stop():
 
 def test_http_maps_domain_rejection_to_json_error():
     def reject(_payload):
-        raise MotionRejected("BUSY", "已有动作正在执行")
+        raise GatewayRejected("BUSY", "已有动作正在执行")
 
     server = GatewayHttpServer(
         "127.0.0.1",
@@ -70,6 +91,9 @@ def test_http_maps_domain_rejection_to_json_error():
         status=dict,
         operation=lambda _operation_id: None,
         submit=reject,
+        follow_operation=lambda _operation_id: None,
+        submit_follow=reject,
+        cancel_follow=lambda _operation_id: {},
         stop=dict,
     )
     server.start()

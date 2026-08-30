@@ -1,249 +1,528 @@
-"""同时承载 ROS2 控制循环与本机 HTTP Adapter 的 Gateway 节点。"""
+"""ROS2 Action 与本机 HTTP 之间的轻量 Gateway。"""
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
-from queue import Empty, Queue
-from threading import Event, Lock
 import time
+from collections.abc import Callable
+from threading import Lock
 from typing import Any
 
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
 import rclpy
+from leap_interfaces.action import ExecuteMotion, FollowTarget
+from nav_msgs.msg import Odometry
+from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from std_srvs.srv import Trigger
 
-from xuegecar_agent_bridge.controller import (
-    ControllerConfig,
-    MotionCommand,
-    MotionController,
-    MotionRejected,
-    OdomSnapshot,
-)
+from xuegecar_agent_bridge.errors import GatewayRejected
 from xuegecar_agent_bridge.http_server import GatewayHttpServer
 
+TERMINAL_STATUSES = {
+    "SUCCEEDED",
+    "FAILED",
+    "TIMED_OUT",
+    "CANCELLED",
+    "ODOM_TIMEOUT",
+}
 
-class _Request:
-    """跨越 HTTP 线程与 ROS 主线程的一次同步请求。"""
-
-    def __init__(self, kind: str, payload: dict[str, Any] | None = None) -> None:
-        # 请求类型：submit 表示提交动作，stop 表示停止当前动作。
-        self.kind = kind
-        # HTTP JSON 请求体；stop 没有参数时使用空字典。
-        self.payload = payload or {}
-        # 跨线程完成信号：HTTP 线程 wait()，ROS 主线程处理后 set()。
-        # done 只表示处理结束，不保存结果，也不具备取消队列请求的能力。
-        self.done = Event()
-        # ROS 主线程处理成功后写入的 JSON 可序列化结果。
-        self.result: dict[str, Any] | None = None
-        # ROS 主线程处理失败后写入的异常，由 HTTP 线程重新抛出并映射为错误响应。
-        self.error: BaseException | None = None
+COCO_TARGETS = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag",
+    "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana",
+    "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+    "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table",
+    "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock",
+    "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+)
 
 
 class AgentGatewayNode(Node):
-    """让 ROS 主线程独占控制器，并向 HTTP 线程提供快照。"""
+    """把稳定 JSON 请求适配为可反馈、可取消的 ROS2 Action。"""
 
     def __init__(self) -> None:
         super().__init__("xuegecar_agent_bridge")
-        defaults = ControllerConfig()
-
-        # ROS 参数既提供代码默认值，也可由 gateway.yaml 在启动时覆盖。
         self.declare_parameter("http_host", "127.0.0.1")
         self.declare_parameter("http_port", 8765)
         self.declare_parameter("odom_topic", "/odometry/filtered")
-        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
-        self.declare_parameter("control_rate_hz", 20.0)
-        for name in (
-            "linear_speed",
-            "angular_speed",
-            "min_distance",
-            "max_distance",
-            "min_duration",
-            "max_duration",
-            "min_angle_degrees",
-            "max_angle_degrees",
-            "distance_tolerance",
-            "angle_tolerance_degrees",
-            "odom_timeout",
-            "action_timeout",
-            "slow_down_ratio",
-        ):
-            self.declare_parameter(name, getattr(defaults, name))
-        self.declare_parameter("stop_publish_count", defaults.stop_publish_count)
-        self.declare_parameter("history_size", defaults.history_size)
+        self.declare_parameter("odom_timeout", 1.0)
+        self.declare_parameter("action_timeout", 2.0)
+        self.declare_parameter("history_size", 100)
+        self.declare_parameter("follow_default_timeout", 60.0)
+        self.declare_parameter("follow_max_timeout", 300.0)
+        self.declare_parameter("supported_target_labels", list(COCO_TARGETS))
 
-        config = replace(
-            defaults,
-            **{
-                name: self.get_parameter(name).value
-                for name in defaults.__dataclass_fields__
-            },
+        self._callbacks = ReentrantCallbackGroup()
+        self._lock = Lock()
+        self._records: dict[str, dict[str, Any]] = {}
+        self._active_operation_id: str | None = None
+        self._active_kind: str | None = None
+        self._goal_handles: dict[str, Any] = {}
+        self._last_odom: dict[str, Any] | None = None
+        self._last_odom_at: float | None = None
+        self._history_size = int(self.get_parameter("history_size").value)
+        self._action_timeout = float(self.get_parameter("action_timeout").value)
+        self._follow_default_timeout = float(
+            self.get_parameter("follow_default_timeout").value
         )
-        # 控制器不依赖 rclpy；节点负责把 ROS 消息转换成它的输入和输出。
-        self._controller = MotionController(config)
+        self._follow_max_timeout = float(
+            self.get_parameter("follow_max_timeout").value
+        )
+        self._supported_targets = {
+            str(value)
+            for value in self.get_parameter("supported_target_labels").value
+        }
 
-        # HTTP 线程只把写请求放进 Queue，控制器始终由 ROS 主线程独占。
-        self._requests: Queue[_Request] = Queue()
-        # 查询接口无需进入请求队列，只读取加锁后的不可变状态副本。
-        self._snapshot_lock = Lock()
-        self._status_snapshot = self._controller.status(time.monotonic())
-        self._operation_snapshots: dict[str, dict[str, Any]] = {}
-
-        cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
-        odom_topic = str(self.get_parameter("odom_topic").value)
-        # /cmd_vel 是控制输出；EKF 融合里程计用于距离、角度和在线状态反馈。
-        self._publisher = self.create_publisher(Twist, cmd_vel_topic, 10)
-        self._subscription = self.create_subscription(
+        self._motion_client = ActionClient(
+            self,
+            ExecuteMotion,
+            "/motion/execute",
+            callback_group=self._callbacks,
+        )
+        self._follow_client = ActionClient(
+            self,
+            FollowTarget,
+            "/motion/follow_target",
+            callback_group=self._callbacks,
+        )
+        self._emergency_client = self.create_client(
+            Trigger,
+            "/motion/emergency_stop",
+            callback_group=self._callbacks,
+        )
+        self.create_subscription(
             Odometry,
-            odom_topic,
+            str(self.get_parameter("odom_topic").value),
             self._on_odom,
             qos_profile_sensor_data,
+            callback_group=self._callbacks,
         )
-        rate = float(self.get_parameter("control_rate_hz").value)
-        if rate <= 0.0:
-            raise ValueError("control_rate_hz 必须大于 0")
-        # Timer 在 ROS executor 中运行：20 Hz 时每 50 ms 推进一次控制状态机。
-        self._timer = self.create_timer(1.0 / rate, self._tick)
 
         host = str(self.get_parameter("http_host").value)
         port = int(self.get_parameter("http_port").value)
-        # HTTP Server 只认识回调接口；submit/stop 最终会转入上面的请求队列。
         self._http = GatewayHttpServer(
             host,
             port,
             status=self._read_status,
-            operation=self._read_operation,
-            submit=self._submit_from_http,
-            stop=self._stop_from_http,
+            operation=lambda operation_id: self._read_operation(operation_id, "motion"),
+            submit=self._submit_motion,
+            follow_operation=lambda operation_id: self._read_operation(
+                operation_id, "follow"
+            ),
+            submit_follow=self._submit_follow,
+            cancel_follow=self._cancel_follow,
+            stop=self._stop,
         )
         self._http.start()
-        self.get_logger().info(
-            f"Robot Gateway listening on http://{host}:{port}; odom={odom_topic}, cmd_vel={cmd_vel_topic}"
+        self.get_logger().info(f"Agent Gateway listening on http://{host}:{port}")
+
+    def _submit_motion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = _validate_motion(payload)
+        goal = ExecuteMotion.Goal()
+        goal.operation_id = normalized["operation_id"]
+        goal.type = normalized["type"]
+        goal.mode = normalized["mode"]
+        goal.value = normalized["value"]
+        record = {
+            **normalized,
+            "kind": "motion",
+            "status": "PENDING",
+            "progress": 0.0,
+            "error_code": None,
+            "error": None,
+        }
+        return self._submit_action(
+            record,
+            self._motion_client,
+            goal,
+            self._motion_feedback,
+            self._motion_result,
         )
 
-    def close(self) -> None:
-        """正常关闭时先停止 HTTP，再尽力发送多次零速度。"""
+    def _submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._validate_follow(payload)
+        goal = FollowTarget.Goal()
+        goal.operation_id = normalized["operation_id"]
+        goal.target_label = normalized["target_label"]
+        goal.timeout_seconds = normalized["timeout_seconds"]
+        record = {
+            **normalized,
+            "kind": "follow",
+            "status": "STARTING",
+            "elapsed_seconds": 0.0,
+            "target_visible": False,
+            "confidence": 0.0,
+            "center_error": 0.0,
+            "area_ratio": 0.0,
+            "command": {"linear_x": 0.0, "angular_z": 0.0},
+            "error_code": None,
+            "error": None,
+        }
+        return self._submit_action(
+            record,
+            self._follow_client,
+            goal,
+            self._follow_feedback,
+            self._follow_result,
+        )
 
-        # 先拒绝新请求，再取消当前动作，最后直接发布冗余的零速度消息。
-        self._http.close()
-        self._controller.stop(time.monotonic(), "Gateway 正常关闭")
-        for _ in range(self._controller.config.stop_publish_count):
-            self._publish_velocity(0.0, 0.0)
+    def _submit_action(
+        self,
+        record: dict[str, Any],
+        client: Any,
+        goal: Any,
+        feedback_callback: Callable[[str, Any], None],
+        result_callback: Callable[[str, Any], None],
+    ) -> dict[str, Any]:
+        operation_id = str(record["operation_id"])
+        kind = str(record["kind"])
+        request_identity = {
+            key: value
+            for key, value in record.items()
+            if key
+            in {
+                "operation_id",
+                "kind",
+                "type",
+                "mode",
+                "value",
+                "target_label",
+                "timeout_seconds",
+            }
+        }
+        with self._lock:
+            previous = self._records.get(operation_id)
+            if previous is not None:
+                if previous.get("_request") != request_identity:
+                    raise GatewayRejected(
+                        "ID_CONFLICT", "operation_id 已用于不同任务"
+                    )
+                return _public(previous)
+            if self._active_operation_id is not None:
+                raise GatewayRejected("BUSY", "已有任务正在执行")
+            record["_request"] = request_identity
+            self._records[operation_id] = record
+            self._active_operation_id = operation_id
+            self._active_kind = kind
+
+        if not client.wait_for_server(timeout_sec=self._action_timeout):
+            self._reject_pending(operation_id)
+            raise GatewayRejected("UNAVAILABLE", "运动控制 Action Server 不可用")
+        future = client.send_goal_async(
+            goal,
+            feedback_callback=lambda message: feedback_callback(operation_id, message),
+        )
+        if not _wait_future(future, self._action_timeout):
+            self._reject_pending(operation_id)
+            raise GatewayRejected("GATEWAY_TIMEOUT", "提交 ROS2 Action 超时")
+        goal_handle = future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self._reject_pending(operation_id)
+            raise GatewayRejected("BUSY", "运动控制节点拒绝任务，可能已有任务运行")
+        with self._lock:
+            self._goal_handles[operation_id] = goal_handle
+            current = self._records[operation_id]
+            if current["status"] == "PENDING":
+                current["status"] = "RUNNING"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda completed: result_callback(operation_id, completed)
+        )
+        with self._lock:
+            return _public(self._records[operation_id])
+
+    def _motion_feedback(self, operation_id: str, message: Any) -> None:
+        feedback = message.feedback
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is not None:
+                record["status"] = feedback.status
+                record["progress"] = float(feedback.progress)
+
+    def _follow_feedback(self, operation_id: str, message: Any) -> None:
+        self._update_follow_record(operation_id, message.feedback)
+
+    def _motion_result(self, operation_id: str, future: Any) -> None:
+        try:
+            result = future.result().result
+            values = {
+                "status": result.status,
+                "progress": float(result.progress),
+                "error_code": result.error_code or None,
+                "error": result.error or None,
+            }
+        except Exception as error:  # noqa: BLE001
+            values = {
+                "status": "FAILED",
+                "error_code": "INVALID_ACTION_RESULT",
+                "error": str(error),
+            }
+        self._finish_record(operation_id, values)
+
+    def _follow_result(self, operation_id: str, future: Any) -> None:
+        try:
+            result = future.result().result
+            self._update_follow_record(operation_id, result)
+            values = {
+                "status": result.status,
+                "error_code": result.error_code or None,
+                "error": result.error or None,
+            }
+        except Exception as error:  # noqa: BLE001
+            values = {
+                "status": "FAILED",
+                "error_code": "INVALID_ACTION_RESULT",
+                "error": str(error),
+            }
+        self._finish_record(operation_id, values)
+
+    def _update_follow_record(self, operation_id: str, value: Any) -> None:
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is None:
+                return
+            record.update(
+                {
+                    "status": value.status,
+                    "elapsed_seconds": round(float(value.elapsed_seconds), 3),
+                    "target_visible": bool(value.target_visible),
+                    "confidence": round(float(value.confidence), 4),
+                    "center_error": round(float(value.center_error), 4),
+                    "area_ratio": round(float(value.area_ratio), 4),
+                    "command": {
+                        "linear_x": round(float(value.linear_x), 4),
+                        "angular_z": round(float(value.angular_z), 4),
+                    },
+                }
+            )
+
+    def _finish_record(self, operation_id: str, values: dict[str, Any]) -> None:
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is not None:
+                record.update(values)
+            self._goal_handles.pop(operation_id, None)
+            if self._active_operation_id == operation_id:
+                self._active_operation_id = None
+                self._active_kind = None
+            self._trim_history_locked()
+
+    def _reject_pending(self, operation_id: str) -> None:
+        with self._lock:
+            self._records.pop(operation_id, None)
+            if self._active_operation_id == operation_id:
+                self._active_operation_id = None
+                self._active_kind = None
+
+    def _read_operation(self, operation_id: str, kind: str) -> dict[str, Any] | None:
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is None or record.get("kind") != kind:
+                return None
+            return _public(record)
+
+    def _cancel_follow(self, operation_id: str) -> dict[str, Any]:
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is None or record.get("kind") != "follow":
+                raise GatewayRejected("NOT_FOUND", "未知 operation_id")
+            if record.get("status") in TERMINAL_STATUSES:
+                return _public(record)
+            goal_handle = self._goal_handles.get(operation_id)
+        if goal_handle is None:
+            raise GatewayRejected("UNAVAILABLE", "任务尚未获得可取消句柄")
+        future = goal_handle.cancel_goal_async()
+        if not _wait_future(future, self._action_timeout):
+            raise GatewayRejected("GATEWAY_TIMEOUT", "取消任务超时")
+        with self._lock:
+            return _public(self._records[operation_id])
+
+    def _stop(self) -> dict[str, Any]:
+        with self._lock:
+            active = self._active_operation_id
+            goal_handle = None if active is None else self._goal_handles.get(active)
+        if goal_handle is not None:
+            goal_handle.cancel_goal_async()
+        if not self._emergency_client.wait_for_service(
+            timeout_sec=self._action_timeout
+        ):
+            raise GatewayRejected("UNAVAILABLE", "急停服务不可用")
+        future = self._emergency_client.call_async(Trigger.Request())
+        if not _wait_future(future, self._action_timeout):
+            raise GatewayRejected("GATEWAY_TIMEOUT", "急停服务响应超时")
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._active_operation_id is None:
+                    break
+            time.sleep(0.02)
+        return self._read_status()
+
+    def _read_status(self) -> dict[str, Any]:
+        now = time.monotonic()
+        odom_timeout = float(self.get_parameter("odom_timeout").value)
+        with self._lock:
+            age = (
+                None
+                if self._last_odom_at is None
+                else max(0.0, now - self._last_odom_at)
+            )
+            active = self._active_operation_id
+            last = next(reversed(self._records.values()), None) if self._records else None
+            return {
+                "online": age is not None and age <= odom_timeout,
+                "odom_age_seconds": age,
+                "pose": None if self._last_odom is None else dict(self._last_odom["pose"]),
+                "velocity": None
+                if self._last_odom is None
+                else dict(self._last_odom["velocity"]),
+                "gateway_status": "IDLE" if active is None else "RUNNING",
+                "operation_id": active,
+                "active_task_kind": self._active_kind,
+                "last_operation": None if last is None else _public(last),
+            }
 
     def _on_odom(self, message: Odometry) -> None:
         orientation = message.pose.pose.orientation
-        # 平面小车只关心绕 Z 轴的 yaw，这里直接从四元数中提取。
         yaw = math.atan2(
             2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
             1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z),
         )
-        self._controller.update_odom(
-            OdomSnapshot(
-                x=float(message.pose.pose.position.x),
-                y=float(message.pose.pose.position.y),
-                yaw=yaw,
-                linear_x=float(message.twist.twist.linear.x),
-                angular_z=float(message.twist.twist.angular.z),
-                received_at=time.monotonic(),
+        with self._lock:
+            self._last_odom = {
+                "pose": {
+                    "x": float(message.pose.pose.position.x),
+                    "y": float(message.pose.pose.position.y),
+                    "yaw": yaw,
+                },
+                "velocity": {
+                    "linear_x": float(message.twist.twist.linear.x),
+                    "angular_z": float(message.twist.twist.angular.z),
+                },
+            }
+            self._last_odom_at = time.monotonic()
+
+    def _validate_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            operation_id = str(payload["operation_id"]).strip()
+            target_label = str(payload["target_label"]).strip().lower()
+            timeout = float(
+                payload.get("timeout_seconds", self._follow_default_timeout)
             )
-        )
+        except (KeyError, TypeError, ValueError) as error:
+            raise GatewayRejected(
+                "INVALID_REQUEST", "跟随任务字段无效"
+            ) from error
+        if not operation_id or not target_label:
+            raise GatewayRejected(
+                "INVALID_REQUEST", "operation_id 和 target_label 不能为空"
+            )
+        if target_label not in self._supported_targets:
+            raise GatewayRejected(
+                "UNSUPPORTED_TARGET", f"当前 YOLO 模型不支持类别 {target_label!r}"
+            )
+        if not 0.0 < timeout <= self._follow_max_timeout:
+            raise GatewayRejected(
+                "OUT_OF_RANGE",
+                f"timeout_seconds 必须大于 0 且不超过 {self._follow_max_timeout:g}",
+            )
+        return {
+            "operation_id": operation_id,
+            "target_label": target_label,
+            "timeout_seconds": timeout,
+        }
 
-    def _tick(self) -> None:
-        now = time.monotonic()
-        # 固定顺序：接收新命令 → 推进控制器 → 发布速度 → 更新查询快照。
-        self._drain_requests(now)
-        velocity = self._controller.tick(now)
-        if velocity is not None:
-            self._publish_velocity(velocity.linear_x, velocity.angular_z)
-        self._refresh_snapshots(now)
+    def _trim_history_locked(self) -> None:
+        while len(self._records) > self._history_size:
+            oldest = next(iter(self._records))
+            if oldest == self._active_operation_id:
+                break
+            self._records.pop(oldest, None)
 
-    def _drain_requests(self, now: float) -> None:
-        # 该函数只从 ROS Timer 回调调用，因此控制器不会被 HTTP 线程并发修改。
-        while True:
-            try:
-                request = self._requests.get_nowait()
-            except Empty:
-                return
-            try:
-                if request.kind == "submit":
-                    # 在 ROS 主线程内完成外部 JSON 的最终校验和动作启动。
-                    command = MotionCommand.from_mapping(request.payload)
-                    request.result = self._controller.submit(command, now)
-                elif request.kind == "stop":
-                    request.result = self._controller.stop(now)
-                else:
-                    raise RuntimeError(f"未知请求类型：{request.kind}")
-            except BaseException as error:
-                request.error = error
-            finally:
-                self._refresh_snapshots(now)
-                # 无论成功还是异常，都必须唤醒正在等待 HTTP 响应的线程。
-                # 若 HTTP 已超时退出，set() 仍可安全调用，但此时不会再次产生 HTTP 回复。
-                request.done.set()
+    def close(self) -> None:
+        """停止 HTTP Server；底盘急停由控制节点负责。"""
+        self._http.close()
 
-    def _request(self, kind: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        request = _Request(kind, payload)
-        # queue.Queue 的 put/get 是线程安全的，这是 HTTP → ROS 的写入桥梁。
-        self._requests.put(request)
-        # HTTP 请求保持同步语义，但不会无限等待失去响应的 ROS executor。
-        # 注意：等待超时只结束 HTTP 请求，不会从队列移除或取消该 ROS 请求；
-        # ROS 主线程恢复后仍可能处理它，并在没有等待者时调用 done.set()。
-        if not request.done.wait(timeout=2.0):
-            raise TimeoutError("ROS2 主线程未在 2 秒内响应")
-        if request.error is not None:
-            raise request.error
-        assert request.result is not None
-        return request.result
 
-    def _submit_from_http(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("submit", payload)
+def _validate_motion(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        operation_id = str(payload["operation_id"]).strip()
+        motion_type = str(payload["type"])
+        mode = str(payload["mode"])
+        value = float(payload["value"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise GatewayRejected("INVALID_REQUEST", "动作字段无效") from error
+    if not operation_id or not math.isfinite(value):
+        raise GatewayRejected("INVALID_REQUEST", "operation_id 或 value 无效")
+    linear = motion_type in {"forward", "backward"}
+    angular = motion_type in {"turn_left", "turn_right"}
+    if not linear and not angular:
+        raise GatewayRejected("INVALID_REQUEST", "未知移动类型")
+    if (linear and mode not in {"distance", "time"}) or (
+        angular and mode not in {"angle", "time"}
+    ):
+        raise GatewayRejected("INVALID_MODE", "移动类型与完成模式不匹配")
+    limits = {
+        "distance": (0.05, 3.0),
+        "angle": (1.0, 180.0),
+        "time": (0.1, 10.0),
+    }
+    minimum, maximum = limits[mode]
+    if not minimum <= value <= maximum:
+        raise GatewayRejected("OUT_OF_RANGE", "动作目标超出允许范围")
+    return {
+        "operation_id": operation_id,
+        "type": motion_type,
+        "mode": mode,
+        "value": value,
+    }
 
-    def _stop_from_http(self) -> dict[str, Any]:
-        return self._request("stop")
 
-    def _read_status(self) -> dict[str, Any]:
-        # 返回副本，避免 HTTP Handler 修改节点内部保存的快照。
-        with self._snapshot_lock:
-            return dict(self._status_snapshot)
+def _wait_future(future: Any, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not future.done() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return future.done()
 
-    def _read_operation(self, operation_id: str) -> dict[str, Any] | None:
-        with self._snapshot_lock:
-            value = self._operation_snapshots.get(operation_id)
-            return None if value is None else dict(value)
 
-    def _refresh_snapshots(self, now: float) -> None:
-        status = self._controller.status(now)
-        operation = status.get("last_operation")
-        # 锁只保护快速的内存替换，不在持锁期间执行控制计算或网络操作。
-        with self._snapshot_lock:
-            self._status_snapshot = status
-            if isinstance(operation, dict):
-                self._operation_snapshots[str(operation["operation_id"])] = operation
-                while len(self._operation_snapshots) > self._controller.config.history_size:
-                    self._operation_snapshots.pop(next(iter(self._operation_snapshots)))
-
-    def _publish_velocity(self, linear_x: float, angular_z: float) -> None:
-        # 控制器输出与 ROS2 geometry_msgs/Twist 的适配点。
-        message = Twist()
-        message.linear.x = linear_x
-        message.angular.z = angular_z
-        self._publisher.publish(message)
+def _public(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if not key.startswith("_")}
 
 
 def main(args: list[str] | None = None) -> None:
-    """运行 Robot Gateway。"""
-
+    """运行 HTTP/Action Gateway。"""
     rclpy.init(args=args)
-    node: AgentGatewayNode | None = None
+    node = AgentGatewayNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        node = AgentGatewayNode()
-        rclpy.spin(node)
-    except KeyboardInterrupt:
+        executor.spin()
+    except (ExternalShutdownException, KeyboardInterrupt):
         pass
     finally:
-        if node is not None:
+        try:
             node.close()
+        except KeyboardInterrupt:
+            pass
+        try:
+            executor.shutdown(timeout_sec=1.0)
+        except KeyboardInterrupt:
+            pass
+        try:
             node.destroy_node()
-        rclpy.shutdown()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

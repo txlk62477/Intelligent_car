@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from enum import Enum
-import math
 from typing import Any
 
 
@@ -90,7 +90,7 @@ class MotionCommand:
     value: float
 
     @classmethod
-    def from_mapping(cls, payload: dict[str, Any]) -> "MotionCommand":
+    def from_mapping(cls, payload: dict[str, Any]) -> MotionCommand:
         """从外部字典构造严格命令。"""
 
         # HTTP JSON 属于不可信边界：字段缺失、枚举错误和非数值都在这里拒绝。

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -42,6 +43,10 @@ SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普�
 11. 用户提供本地图片并询问图片内容时，调用 recognize_image；图片路径必须使用用户提供的
     路径，问题可选。工具返回失败时如实说明，不要猜测图片内容，也不要把图片 Base64 或内部
     Provider 错误细节展示给用户。
+12. 用户要求跟随某个可见物体时，先把中文目标转换为单个 YOLO COCO 英文类别名，再调用
+    start_follow_target。默认跟随 60 秒，用户明确要求时可设置大于 0、最大 300 秒；不要把跟随请求拆成
+    逐帧移动命令。查询跟随进度调用 get_follow_task_status，停止指定跟随任务调用
+    cancel_follow_task；紧急停车仍必须调用 stop_robot。
 """
 
 
@@ -61,7 +66,7 @@ class SupervisorNodes:
 
     async def supervisor(
         self, state: CarAgentState
-    ) -> Command:
+    ) -> Command[Literal["prepare_motion_handoff", "direct_tools", END]]:
         """让模型直接回答或选择唯一工具，并显式跳转到下一节点。"""
         response = await self._model.ainvoke(
             [SystemMessage(content=SUPERVISOR_PROMPT), *state.get("messages", [])]
@@ -78,7 +83,9 @@ class SupervisorNodes:
             destination = "direct_tools"
         return Command(update={"messages": [response]}, goto=destination)
 
-    def prepare_motion_handoff(self, state: CarAgentState) -> Command:
+    def prepare_motion_handoff(
+        self, state: CarAgentState
+    ) -> Command[Literal["supervisor", "relative_motion_workflow"]]:
         """验证唯一的移动工具调用，并准备移动子图所需的状态。"""
         messages = list(state.get("messages", []))
         last = messages[-1] if messages else None
@@ -191,7 +198,7 @@ class DirectToolsNode:
                 if getattr(tool, "coroutine", None) is not None:
                     result = await tool.ainvoke(call)
                 else:
-                    result = tool.invoke(call)
+                    result = await asyncio.to_thread(tool.invoke, call)
                 if isinstance(result, ToolMessage):
                     outputs.append(result)
                 else:
