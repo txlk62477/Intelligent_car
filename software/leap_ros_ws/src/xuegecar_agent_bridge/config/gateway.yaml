@@ -15,5 +15,5 @@ xuegecar_agent_bridge:
     detections_max_age: 1.5
     detections_min_score: 0.35
     detections_max_items: 8
-    detections_probe_timeout: 5.0
-    detections_probe_runtime: 20.0
+    detections_probe_timeout: 15.0
+    detections_probe_runtime: 30.0

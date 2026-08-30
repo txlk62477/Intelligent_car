@@ -77,8 +77,8 @@ class AgentGatewayNode(Node):
         self.declare_parameter("detections_max_age", 1.5)
         self.declare_parameter("detections_min_score", 0.35)
         self.declare_parameter("detections_max_items", 8)
-        self.declare_parameter("detections_probe_timeout", 5.0)
-        self.declare_parameter("detections_probe_runtime", 20.0)
+        self.declare_parameter("detections_probe_timeout", 15.0)
+        self.declare_parameter("detections_probe_runtime", 30.0)
 
         self._callbacks = ReentrantCallbackGroup()
         self._lock = Lock()

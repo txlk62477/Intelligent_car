@@ -67,6 +67,10 @@ class HttpRobotGateway:
         """构造指向固定 base_url 的 HTTP Adapter。"""
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        # 检测探测可能触发 YOLO 冷启动（模型加载），独立使用更长的超时。
+        self._detections_timeout = float(
+            os.getenv("ROBOT_GATEWAY_DETECTIONS_TIMEOUT", "20.0")
+        )
 
     def get_status(self) -> dict[str, Any]:
         """读取机器人与 Gateway 状态快照。"""
@@ -103,15 +107,20 @@ class HttpRobotGateway:
         return self._request("GET", "/v1/camera/snapshot")
 
     def get_detections(self) -> dict[str, Any]:
-        """读取当前画面的 YOLO 检测快照。"""
-        return self._request("GET", "/v1/perception/detections")
+        """读取当前画面的 YOLO 检测快照；探测可能触发 YOLO 冷启动，用更长超时。"""
+        return self._request(
+            "GET", "/v1/perception/detections", timeout=self._detections_timeout
+        )
 
     def _request(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
+        effective_timeout = self._timeout if timeout is None else timeout
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = Request(
             self._base_url + path,
@@ -120,7 +129,7 @@ class HttpRobotGateway:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urlopen(request, timeout=self._timeout) as response:
+            with urlopen(request, timeout=effective_timeout) as response:
                 result = json.load(response)
         except HTTPError as error:
             try:
