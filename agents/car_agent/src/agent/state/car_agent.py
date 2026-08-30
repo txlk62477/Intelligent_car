@@ -56,6 +56,9 @@ class CarAgentState(MessagesState):
     # 移动子图 → Supervisor：压缩后的唯一结构化输出。
     motion_result: NotRequired[MotionResult | None]  # collect 节点将其转成 ToolMessage
 
+    # Supervisor handoff 簿记：标记刚运行的是哪个子图，供合并后的 collect 节点配对。
+    pending_handoff_kind: NotRequired[str]  # "motion" 或 "follow"
+
     # Supervisor → 跟随子图：结构化 handoff 数据。
     follow_target_label: NotRequired[str]  # 单个 YOLO COCO 英文类别名
     follow_timeout_seconds: NotRequired[float]  # 跟随总时限，默认 60 秒

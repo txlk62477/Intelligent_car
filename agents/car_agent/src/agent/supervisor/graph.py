@@ -22,8 +22,10 @@ from agent.workflows.follow import build_follow_workflow
 from agent.workflows.motion import build_motion_workflow
 
 # Supervisor 的显式跳转目的地；END 是运行时 str 常量，用字符串字面量保持类型精确。
-SupervisorDestination = Literal[
-    "prepare_motion_handoff", "prepare_follow_handoff", "direct_tools", "__end__"
+SupervisorDestination = Literal["prepare_handoff", "direct_tools", "__end__"]
+# prepare_handoff 与两个 _prepare_* 共用的返回类型。
+HandoffDestination = Literal[
+    "relative_motion_workflow", "follow_workflow", "supervisor"
 ]
 
 SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普通问题、查询小车状态、
@@ -87,53 +89,55 @@ class SupervisorNodes:
         )
         if not response.tool_calls:
             destination = cast(SupervisorDestination, END)
-        elif (
-            len(response.tool_calls) == 1
-            and str(response.tool_calls[0].get("name")) == "delegate_to_motion_workflow"
-        ):
-            destination = "prepare_motion_handoff"
-        elif (
-            len(response.tool_calls) == 1
-            and str(response.tool_calls[0].get("name")) == "delegate_to_follow_workflow"
-        ):
-            destination = "prepare_follow_handoff"
+        elif len(response.tool_calls) == 1 and str(
+            response.tool_calls[0].get("name")
+        ) in {"delegate_to_motion_workflow", "delegate_to_follow_workflow"}:
+            destination = "prepare_handoff"
         else:
             destination = "direct_tools"
         return Command(update={"messages": [response]}, goto=destination)
 
-    def prepare_motion_handoff(
-        self, state: CarAgentState
-    ) -> Command[Literal["supervisor", "relative_motion_workflow"]]:
-        """验证唯一的移动工具调用，并准备移动子图所需的状态。"""
+    def prepare_handoff(self, state: CarAgentState) -> Command[HandoffDestination]:
+        """验证唯一的委派工具调用，并准备对应子图所需的状态。"""
         messages = list(state.get("messages", []))
         last = messages[-1] if messages else None
         if not isinstance(last, AIMessage) or len(last.tool_calls) != 1:
-            return Command(
-                update={
-                    "motion_status": "handoff_failed",
-                    "motion_error": "移动委派必须是唯一工具调用",
-                },
-                goto="supervisor",
+            fallback = (
+                last.tool_calls[0]
+                if isinstance(last, AIMessage) and last.tool_calls
+                else {"name": "delegate", "id": "unknown"}
             )
-
-        call = last.tool_calls[0]
-        name = str(call.get("name"))
-        call_id = str(call.get("id"))
-        if name != "delegate_to_motion_workflow":
             return Command(
                 update={
                     "messages": [
                         _tool_message(
-                            call,
-                            {"status": "rejected", "error": f"未知移动工具：{name}"},
+                            fallback,
+                            {"status": "rejected", "error": "委派必须是唯一工具调用"},
                         )
-                    ],
-                    "motion_status": "handoff_failed",
-                    "motion_error": f"未知移动工具：{name}",
+                    ]
                 },
                 goto="supervisor",
             )
+        call = last.tool_calls[0]
+        name = str(call.get("name"))
+        if name == "delegate_to_motion_workflow":
+            return self._prepare_motion(call)
+        if name == "delegate_to_follow_workflow":
+            return self._prepare_follow(call)
+        return Command(
+            update={
+                "messages": [
+                    _tool_message(
+                        call, {"status": "rejected", "error": f"未知委派工具：{name}"}
+                    )
+                ]
+            },
+            goto="supervisor",
+        )
 
+    def _prepare_motion(self, call: Mapping[str, Any]) -> Command[HandoffDestination]:
+        """验证移动委派参数并写入移动子图状态。"""
+        call_id = str(call.get("id"))
         try:
             raw_actions = call.get("args", {}).get("actions", [])
             actions = [
@@ -166,60 +170,14 @@ class SupervisorNodes:
                 "motion_status": "delegated",
                 "motion_error": "",
                 "motion_result": None,
+                "pending_handoff_kind": "motion",
             },
             goto="relative_motion_workflow",
         )
 
-    def collect_motion_result(self, state: CarAgentState) -> dict[str, Any]:
-        """保持 AI tool-call 与 ToolMessage 配对后交还 Supervisor。"""
-        result = state.get("motion_result") or {
-            "status": "failed",
-            "summary": "移动 Workflow 未返回结果",
-            "completed_actions": [],
-            "failed_action": None,
-        }
-        return {
-            "messages": [
-                ToolMessage(
-                    content=json.dumps(result, ensure_ascii=False, default=str),
-                    name="delegate_to_motion_workflow",
-                    tool_call_id=str(state.get("motion_tool_call_id") or "unknown"),
-                )
-            ],
-            "motion_status": "collected",
-        }
-
-    def prepare_follow_handoff(
-        self, state: CarAgentState
-    ) -> Command[Literal["supervisor", "follow_workflow"]]:
-        """验证唯一的跟随工具调用，并准备跟随子图所需的状态。"""
-        messages = list(state.get("messages", []))
-        last = messages[-1] if messages else None
-        if not isinstance(last, AIMessage) or len(last.tool_calls) != 1:
-            return Command(
-                update={
-                    "follow_status": "handoff_failed",
-                    "follow_error": "跟随委派必须是唯一工具调用",
-                },
-                goto="supervisor",
-            )
-        call = last.tool_calls[0]
-        name = str(call.get("name"))
+    def _prepare_follow(self, call: Mapping[str, Any]) -> Command[HandoffDestination]:
+        """验证跟随委派参数并写入跟随子图状态。"""
         call_id = str(call.get("id"))
-        if name != "delegate_to_follow_workflow":
-            return Command(
-                update={
-                    "messages": [
-                        _tool_message(
-                            call,
-                            {"status": "rejected", "error": f"未知跟随工具：{name}"},
-                        )
-                    ],
-                    "follow_status": "handoff_failed",
-                    "follow_error": f"未知跟随工具：{name}",
-                },
-                goto="supervisor",
-            )
         args = dict(call.get("args") or {})
         try:
             request = FollowRequest.model_validate(
@@ -253,27 +211,48 @@ class SupervisorNodes:
                 "follow_error": "",
                 "follow_status": "delegated",
                 "follow_result": None,
+                "pending_handoff_kind": "follow",
             },
             goto="follow_workflow",
         )
 
-    def collect_follow_result(self, state: CarAgentState) -> dict[str, Any]:
-        """保持 AI tool-call 与 ToolMessage 配对后交还 Supervisor。"""
-        result = state.get("follow_result") or {
-            "status": "failed",
-            "summary": "跟随 Workflow 未返回结果",
-            "target_label": str(state.get("follow_target_label") or ""),
-            "final_observation": None,
-        }
+    def collect_handoff_result(self, state: CarAgentState) -> dict[str, Any]:
+        """按刚运行的子图类型，把结构化结果包装成配对的 ToolMessage。"""
+        kind = str(state.get("pending_handoff_kind") or "")
+        result: dict[str, Any]
+        if kind == "motion":
+            tool_name = "delegate_to_motion_workflow"
+            call_id = str(state.get("motion_tool_call_id") or "unknown")
+            result = dict(
+                state.get("motion_result")
+                or {
+                    "status": "failed",
+                    "summary": "移动 Workflow 未返回结果",
+                    "completed_actions": [],
+                    "failed_action": None,
+                }
+            )
+        else:
+            tool_name = "delegate_to_follow_workflow"
+            call_id = str(state.get("follow_tool_call_id") or "unknown")
+            result = dict(
+                state.get("follow_result")
+                or {
+                    "status": "failed",
+                    "summary": "跟随 Workflow 未返回结果",
+                    "target_label": str(state.get("follow_target_label") or ""),
+                    "final_observation": None,
+                }
+            )
         return {
             "messages": [
                 ToolMessage(
                     content=json.dumps(result, ensure_ascii=False, default=str),
-                    name="delegate_to_follow_workflow",
-                    tool_call_id=str(state.get("follow_tool_call_id") or "unknown"),
+                    name=tool_name,
+                    tool_call_id=call_id,
                 )
             ],
-            "follow_status": "collected",
+            "pending_handoff_kind": "",
         }
 
 
@@ -343,18 +322,15 @@ def build_car_agent_graph(
     )
     builder.add_node("supervisor", nodes.supervisor)
     builder.add_node("direct_tools", direct_tools)
-    builder.add_node("prepare_motion_handoff", nodes.prepare_motion_handoff)
+    builder.add_node("prepare_handoff", nodes.prepare_handoff)
     builder.add_node("relative_motion_workflow", motion_workflow)
-    builder.add_node("collect_motion_result", nodes.collect_motion_result)
-    builder.add_node("prepare_follow_handoff", nodes.prepare_follow_handoff)
     builder.add_node("follow_workflow", follow_workflow)
-    builder.add_node("collect_follow_result", nodes.collect_follow_result)
+    builder.add_node("collect_handoff_result", nodes.collect_handoff_result)
     builder.add_edge(START, "supervisor")
     builder.add_edge("direct_tools", "supervisor")
-    builder.add_edge("relative_motion_workflow", "collect_motion_result")
-    builder.add_edge("collect_motion_result", "supervisor")
-    builder.add_edge("follow_workflow", "collect_follow_result")
-    builder.add_edge("collect_follow_result", "supervisor")
+    builder.add_edge("relative_motion_workflow", "collect_handoff_result")
+    builder.add_edge("follow_workflow", "collect_handoff_result")
+    builder.add_edge("collect_handoff_result", "supervisor")
     return builder.compile(name=name, checkpointer=checkpointer)
 
 

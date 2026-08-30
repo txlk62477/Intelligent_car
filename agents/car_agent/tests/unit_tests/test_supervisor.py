@@ -262,10 +262,14 @@ async def test_graph_uses_direct_tools_and_handoff_nodes() -> None:
     node_names = set(app.get_graph().nodes)
 
     assert "direct_tools" in node_names
-    assert "prepare_motion_handoff" in node_names
+    assert "prepare_handoff" in node_names
     assert "relative_motion_workflow" in node_names
-    assert "prepare_follow_handoff" in node_names
     assert "follow_workflow" in node_names
+    assert "collect_handoff_result" in node_names
+    assert "prepare_motion_handoff" not in node_names
+    assert "prepare_follow_handoff" not in node_names
+    assert "collect_motion_result" not in node_names
+    assert "collect_follow_result" not in node_names
     assert "run_tool" not in node_names
 
 
