@@ -73,7 +73,7 @@ def test_supervisor_prompt_defines_routing_and_limits() -> None:
     assert "stop_robot" in SUPERVISOR_PROMPT
     assert "delegate_to_motion_workflow" in SUPERVISOR_PROMPT
     assert "delegate_to_follow_workflow" in SUPERVISOR_PROMPT
-    assert "get_perception_detections" in SUPERVISOR_PROMPT
+    assert "get_perception_detections" not in SUPERVISOR_PROMPT
     assert "立即停车" in SUPERVISOR_PROMPT
     assert "0.05～3" in SUPERVISOR_PROMPT or "0.05" in SUPERVISOR_PROMPT
     assert "/odometry/filtered" in SUPERVISOR_PROMPT

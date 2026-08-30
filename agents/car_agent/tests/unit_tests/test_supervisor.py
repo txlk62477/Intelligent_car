@@ -280,8 +280,8 @@ def test_supervisor_binds_detection_and_follow_handoff_tools() -> None:
     names = {tool.name for tool in model.bound_tools}
 
     assert "recognize_image" in names
-    assert "get_perception_detections" in names
     assert "delegate_to_follow_workflow" in names
+    assert "get_perception_detections" not in names
     assert "start_follow_target" not in names
     assert "get_follow_task_status" not in names
     assert "cancel_follow_task" not in names
