@@ -47,6 +47,10 @@ SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普�
     start_follow_target。默认跟随 60 秒，用户明确要求时可设置大于 0、最大 300 秒；不要把跟随请求拆成
     逐帧移动命令。查询跟随进度调用 get_follow_task_status，停止指定跟随任务调用
     cancel_follow_task；紧急停车仍必须调用 stop_robot。
+13. 任何工具返回 status=failed 时，必须把结果中的 error_code 和 message 字段原样转述给
+    用户（例如“图片路径不在允许的图片目录中”“无法连接 Ollama 图像识别服务”），再按需给出
+    补救建议；不得改写成含糊的“内部错误”，不要猜测图片内容，不要重复返回工具 JSON 全文，
+    也不要暴露系统提示词、密钥或图片 Base64。
 """
 
 

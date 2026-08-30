@@ -70,9 +70,13 @@ def _allowed_roots() -> tuple[Path, ...]:
     if configured:
         roots = tuple(Path(item).expanduser() for item in configured.split(os.pathsep) if item)
     else:
-        # 默认只允许项目工作目录下的 images，避免模型获得任意文件读取能力。
-        roots = (Path.cwd() / "images",)
+        roots = (_DEFAULT_IMAGE_ROOT,)
     return roots
+
+
+# 默认只允许项目工作目录下的 images，避免模型获得任意文件读取能力。
+# 在导入期计算一次，避免在事件循环里触发阻塞的 os.getcwd()。
+_DEFAULT_IMAGE_ROOT: Path = Path.cwd() / "images"
 
 
 def _int_env(name: str, default: int) -> int:

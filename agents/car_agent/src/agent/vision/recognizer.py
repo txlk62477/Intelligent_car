@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 import time
 from dataclasses import dataclass, field
@@ -146,7 +147,10 @@ class DefaultVisionRecognizer:
         """校验图片、调用 Provider，并测量一次完整识别的端到端延迟。"""
         started = time.perf_counter()
         try:
-            image_data, media_type = self._load_image(image_path)
+            # 文件校验和读取（resolve/stat/read_bytes）移到后台线程，避免阻塞事件循环。
+            image_data, media_type = await asyncio.to_thread(
+                self._load_image, image_path
+            )
             normalized_question = self._normalize_question(question)
             response = await self._provider.recognize(
                 image_data,

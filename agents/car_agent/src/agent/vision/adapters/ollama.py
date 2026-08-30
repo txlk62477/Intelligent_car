@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import urllib.error
@@ -36,8 +37,10 @@ class OllamaVisionAdapter:
         media_type: str,
         question: str,
     ) -> ProviderResponse:
-        """执行一次阻塞 HTTP 请求并返回统一 Provider 响应。"""
-        return self._recognize_sync(image_data, media_type, question)
+        """在后台线程执行阻塞 HTTP 请求，避免阻塞事件循环。"""
+        return await asyncio.to_thread(
+            self._recognize_sync, image_data, media_type, question
+        )
 
     def _recognize_sync(
         self,
