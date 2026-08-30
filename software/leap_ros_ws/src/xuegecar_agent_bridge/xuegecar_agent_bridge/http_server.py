@@ -19,6 +19,19 @@ FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)$")
 CANCEL_FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)/cancel$")
 
 
+def _rejection_status(code: str) -> int:
+    """把 Gateway 领域错误码映射为 HTTP 状态码。"""
+    if code in {"BUSY", "ID_CONFLICT"}:
+        return 409
+    if code == "NOT_FOUND":
+        return 404
+    if code in {"UNAVAILABLE", "GATEWAY_TIMEOUT", "NO_FRAME", "STALE_FRAME"}:
+        return 503
+    if code == "SNAPSHOT_WRITE_ERROR":
+        return 500
+    return 422
+
+
 class GatewayHttpServer:
     """在后台线程运行的依赖最小 HTTP Adapter。"""
 
@@ -34,6 +47,7 @@ class GatewayHttpServer:
         submit_follow: Callable[[dict[str, Any]], dict[str, Any]],
         cancel_follow: Callable[[str], dict[str, Any]],
         stop: Callable[[], dict[str, Any]],
+        snapshot: Callable[[], dict[str, Any]],
     ) -> None:
         # Handler 通过闭包持有这些业务回调。HTTP 层只处理协议，不依赖 ROS2。
         handler = _handler_factory(
@@ -44,6 +58,7 @@ class GatewayHttpServer:
             submit_follow=submit_follow,
             cancel_follow=cancel_follow,
             stop=stop,
+            snapshot=snapshot,
         )
         # 每个 HTTP 请求可由独立线程处理；真正的运动状态由 node.py 负责同步。
         self._server = ThreadingHTTPServer((host, port), handler)
@@ -83,6 +98,7 @@ def _handler_factory(
     submit_follow: Callable[[dict[str, Any]], dict[str, Any]],
     cancel_follow: Callable[[str], dict[str, Any]],
     stop: Callable[[], dict[str, Any]],
+    snapshot: Callable[[], dict[str, Any]],
 ) -> type[BaseHTTPRequestHandler]:
     # 工厂把节点提供的回调封装进 Handler 类，避免使用全局节点对象。
     class Handler(BaseHTTPRequestHandler):
@@ -117,6 +133,13 @@ def _handler_factory(
                 else:
                     self._write_json(200, result)
                 return
+            if self.path == "/v1/camera/snapshot":
+                try:
+                    # 抓取相机最新帧并落盘；无帧、断流等以领域错误码返回。
+                    self._write_json(200, snapshot())
+                except GatewayRejected as error:
+                    self._write_rejection(error)
+                return
             self._write_json(404, {"error_code": "NOT_FOUND", "error": "接口不存在"})
 
         def do_POST(self) -> None:
@@ -141,17 +164,7 @@ def _handler_factory(
                     404, {"error_code": "NOT_FOUND", "error": "接口不存在"}
                 )
             except GatewayRejected as error:
-                if error.code in {"BUSY", "ID_CONFLICT"}:
-                    status_code = 409
-                elif error.code == "NOT_FOUND":
-                    status_code = 404
-                elif error.code in {"UNAVAILABLE", "GATEWAY_TIMEOUT"}:
-                    status_code = 503
-                else:
-                    status_code = 422
-                self._write_json(
-                    status_code, {"error_code": error.code, "error": str(error)}
-                )
+                self._write_rejection(error)
             except (
                 json.JSONDecodeError,
                 TypeError,
@@ -178,6 +191,12 @@ def _handler_factory(
             if not isinstance(payload, dict):
                 raise TypeError("JSON 顶层必须是对象")
             return payload
+
+        def _write_rejection(self, error: GatewayRejected) -> None:
+            self._write_json(
+                _rejection_status(error.code),
+                {"error_code": error.code, "error": str(error)},
+            )
 
         def _write_json(self, status_code: int, payload: dict[str, Any]) -> None:
             # HTTP 回复统一为 UTF-8 JSON；wfile.write() 才是真正把正文发回 Agent。

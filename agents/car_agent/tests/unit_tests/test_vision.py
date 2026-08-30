@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.common.robot_gateway import RobotGatewayError
 from agent.tools.vision import recognize_image
 from agent.vision.factory import build_vision_recognizer
 from agent.vision.recognizer import (
@@ -110,7 +111,9 @@ def test_factory_rejects_unknown_provider() -> None:
         build_vision_recognizer("unknown")
 
 
-async def test_image_tool_returns_normalized_success(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_image_tool_returns_normalized_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeRecognizer:
         async def recognize(
             self, image_path: Path, question: str | None = None
@@ -135,3 +138,80 @@ async def test_image_tool_returns_normalized_success(monkeypatch: pytest.MonkeyP
     assert result["status"] == "success"
     assert result["answer"] == "一辆车。"
     assert result["latency_ms"] == 1.2
+
+
+async def test_image_tool_captures_camera_frame_without_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(FIXTURE.read_bytes())
+    captured_paths: list[Path] = []
+
+    class FakeRecognizer:
+        async def recognize(
+            self, image_path: Path, question: str | None = None
+        ) -> VisionResult:
+            captured_paths.append(image_path)
+            return VisionResult(
+                status="success",
+                answer="画面里有一把椅子。",
+                provider="fake",
+                model="fake-vision",
+                latency_ms=1.0,
+            )
+
+    class FakeGateway:
+        calls = 0
+
+        def get_camera_snapshot(self) -> dict:
+            FakeGateway.calls += 1
+            return {"status": "captured", "path": str(frame), "format": "jpeg"}
+
+    monkeypatch.setattr("agent.tools.vision.get_robot_gateway", lambda: FakeGateway())
+    monkeypatch.setattr(
+        "agent.tools.vision.get_vision_recognizer", lambda: FakeRecognizer()
+    )
+    result = await recognize_image.ainvoke({"question": "画面里有什么？"})
+
+    assert result["status"] == "success"
+    assert result["answer"] == "画面里有一把椅子。"
+    assert FakeGateway.calls == 1
+    assert captured_paths == [frame]
+
+
+async def test_image_tool_reports_snapshot_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingGateway:
+        def get_camera_snapshot(self) -> dict:
+            return {
+                "status": "failed",
+                "error_code": "NO_FRAME",
+                "error": "尚未收到相机帧",
+            }
+
+    monkeypatch.setattr(
+        "agent.tools.vision.get_robot_gateway", lambda: FailingGateway()
+    )
+    result = await recognize_image.ainvoke({})
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "SNAPSHOT_FAILED"
+    assert "尚未收到相机帧" in result["message"]
+
+
+async def test_image_tool_maps_gateway_error_to_snapshot_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RaisingGateway:
+        def get_camera_snapshot(self) -> dict:
+            raise RobotGatewayError("NO_FRAME", "尚未收到相机帧")
+
+    monkeypatch.setattr(
+        "agent.tools.vision.get_robot_gateway", lambda: RaisingGateway()
+    )
+    result = await recognize_image.ainvoke({})
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "SNAPSHOT_FAILED"
+    assert "尚未收到相机帧" in result["message"]

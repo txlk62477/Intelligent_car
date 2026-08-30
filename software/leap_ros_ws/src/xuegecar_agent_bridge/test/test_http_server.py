@@ -35,6 +35,11 @@ def test_http_routes_status_submit_operation_and_stop():
         submit_follow=submit,
         cancel_follow=lambda operation_id: operations[operation_id],
         stop=lambda: {"gateway_status": "IDLE"},
+        snapshot=lambda: {
+            "status": "captured",
+            "path": "/tmp/snapshot_1.jpg",
+            "format": "jpeg",
+        },
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"
@@ -81,6 +86,59 @@ def test_http_routes_status_submit_operation_and_stop():
         server.close()
 
 
+def test_http_camera_snapshot_route_and_rejection():
+    def snapshot():
+        raise GatewayRejected("NO_FRAME", "尚未收到相机帧")
+
+    server = GatewayHttpServer(
+        "127.0.0.1",
+        0,
+        status=dict,
+        operation=lambda _operation_id: None,
+        submit=dict,
+        follow_operation=lambda _operation_id: None,
+        submit_follow=dict,
+        cancel_follow=lambda _operation_id: {},
+        stop=dict,
+        snapshot=snapshot,
+    )
+    server.start()
+    base_url = f"http://{server.address[0]}:{server.address[1]}"
+    try:
+        try:
+            request_json(base_url, "/v1/camera/snapshot")
+        except HTTPError as error:
+            assert error.code == 503
+            assert json.load(error)["error_code"] == "NO_FRAME"
+        else:
+            raise AssertionError("无相机帧时应返回 HTTP 503")
+    finally:
+        server.close()
+
+
+def test_http_camera_snapshot_returns_captured_frame():
+    server = GatewayHttpServer(
+        "127.0.0.1",
+        0,
+        status=dict,
+        operation=lambda _operation_id: None,
+        submit=dict,
+        follow_operation=lambda _operation_id: None,
+        submit_follow=dict,
+        cancel_follow=lambda _operation_id: {},
+        stop=dict,
+        snapshot=lambda: {"status": "captured", "path": "/tmp/frame.jpg"},
+    )
+    server.start()
+    base_url = f"http://{server.address[0]}:{server.address[1]}"
+    try:
+        status, body = request_json(base_url, "/v1/camera/snapshot")
+        assert status == 200
+        assert body["path"] == "/tmp/frame.jpg"
+    finally:
+        server.close()
+
+
 def test_http_maps_domain_rejection_to_json_error():
     def reject(_payload):
         raise GatewayRejected("BUSY", "已有动作正在执行")
@@ -95,6 +153,7 @@ def test_http_maps_domain_rejection_to_json_error():
         submit_follow=reject,
         cancel_follow=lambda _operation_id: {},
         stop=dict,
+        snapshot=dict,
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"

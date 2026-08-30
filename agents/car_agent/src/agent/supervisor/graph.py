@@ -40,9 +40,10 @@ SUPERVISOR_PROMPT = """你是 Intelligent Car 的 Supervisor，负责回答普�
    不得把基础指令速度描述成小车始终能够达到的真实测量速度。
 10. 融合里程计当前使用轮式 vx 与 IMU gyro_z，不能单独证明轮子没有悬空或打滑。没有外部
     激光、视觉或其他接地证据时，不得声称位移一定等于真实车身位移。
-11. 用户提供本地图片并询问图片内容时，调用 recognize_image；图片路径必须使用用户提供的
-    路径，问题可选。工具返回失败时如实说明，不要猜测图片内容，也不要把图片 Base64 或内部
-    Provider 错误细节展示给用户。
+11. 用户提供本地图片并询问图片内容时，调用 recognize_image 并传入用户给出的路径；用户询问
+    “当前画面”“摄像头看到什么”等而未给出路径时，调用 recognize_image 且不传 image_path，
+    工具会自动抓取小车相机当前帧。工具返回失败时按规则 13 原样转述错误码和原因，不要猜测
+    图片内容，也不要把图片 Base64 或内部 Provider 错误细节展示给用户。
 12. 用户要求跟随某个可见物体时，先把中文目标转换为单个 YOLO COCO 英文类别名，再调用
     start_follow_target。默认跟随 60 秒，用户明确要求时可设置大于 0、最大 300 秒；不要把跟随请求拆成
     逐帧移动命令。查询跟随进度调用 get_follow_task_status，停止指定跟随任务调用
@@ -79,8 +80,7 @@ class SupervisorNodes:
             destination = END
         elif (
             len(response.tool_calls) == 1
-            and str(response.tool_calls[0].get("name"))
-            == "delegate_to_motion_workflow"
+            and str(response.tool_calls[0].get("name")) == "delegate_to_motion_workflow"
         ):
             destination = "prepare_motion_handoff"
         else:

@@ -51,6 +51,10 @@ class RobotGateway(Protocol):
         """取消指定视觉跟随任务。"""
         ...
 
+    def get_camera_snapshot(self) -> dict[str, Any]:
+        """抓取小车相机最新帧并保存为本地文件。"""
+        ...
+
 
 class HttpRobotGateway:
     """通过本机 JSON/HTTP 调用 ROS2 Gateway。"""
@@ -82,15 +86,17 @@ class HttpRobotGateway:
 
     def get_follow(self, operation_id: str) -> dict[str, Any]:
         """查询视觉跟随任务。"""
-        return self._request(
-            "GET", f"/v1/follow-tasks/{quote(operation_id, safe='')}"
-        )
+        return self._request("GET", f"/v1/follow-tasks/{quote(operation_id, safe='')}")
 
     def cancel_follow(self, operation_id: str) -> dict[str, Any]:
         """取消视觉跟随任务。"""
         return self._request(
             "POST", f"/v1/follow-tasks/{quote(operation_id, safe='')}/cancel", {}
         )
+
+    def get_camera_snapshot(self) -> dict[str, Any]:
+        """抓取小车相机最新帧并保存为本地 jpeg 文件。"""
+        return self._request("GET", "/v1/camera/snapshot")
 
     def _request(
         self,

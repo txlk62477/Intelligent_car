@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -15,9 +16,11 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import CompressedImage
 from std_srvs.srv import Trigger
 
+from xuegecar_agent_bridge.camera_snapshot import CameraSnapshotStore
 from xuegecar_agent_bridge.errors import GatewayRejected
 from xuegecar_agent_bridge.http_server import GatewayHttpServer
 
@@ -59,6 +62,9 @@ class AgentGatewayNode(Node):
         self.declare_parameter("follow_default_timeout", 60.0)
         self.declare_parameter("follow_max_timeout", 300.0)
         self.declare_parameter("supported_target_labels", list(COCO_TARGETS))
+        self.declare_parameter("camera_topic", "/camera/image_raw/compressed")
+        self.declare_parameter("snapshot_dir", "")
+        self.declare_parameter("snapshot_max_age", 5.0)
 
         self._callbacks = ReentrantCallbackGroup()
         self._lock = Lock()
@@ -105,6 +111,18 @@ class AgentGatewayNode(Node):
             qos_profile_sensor_data,
             callback_group=self._callbacks,
         )
+        snapshot_dir = str(self.get_parameter("snapshot_dir").value).strip()
+        self._snapshot_store = CameraSnapshotStore(
+            Path(snapshot_dir).expanduser() if snapshot_dir else None,
+            max_age=float(self.get_parameter("snapshot_max_age").value),
+        )
+        self.create_subscription(
+            CompressedImage,
+            str(self.get_parameter("camera_topic").value),
+            self._on_camera_frame,
+            _video_qos(),
+            callback_group=self._callbacks,
+        )
 
         host = str(self.get_parameter("http_host").value)
         port = int(self.get_parameter("http_port").value)
@@ -120,6 +138,7 @@ class AgentGatewayNode(Node):
             submit_follow=self._submit_follow,
             cancel_follow=self._cancel_follow,
             stop=self._stop,
+            snapshot=self._snapshot_store.capture,
         )
         self._http.start()
         self.get_logger().info(f"Agent Gateway listening on http://{host}:{port}")
@@ -410,6 +429,10 @@ class AgentGatewayNode(Node):
             }
             self._last_odom_at = time.monotonic()
 
+    def _on_camera_frame(self, message: CompressedImage) -> None:
+        """缓存相机最新压缩帧，供 /v1/camera/snapshot 落盘。"""
+        self._snapshot_store.store(bytes(message.data), str(message.format))
+
     def _validate_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             operation_id = str(payload["operation_id"]).strip()
@@ -484,6 +507,15 @@ def _validate_motion(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": mode,
         "value": value,
     }
+
+
+def _video_qos() -> QoSProfile:
+    """与相机发布端一致的 best-effort 视频 QoS。"""
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=2,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+    )
 
 
 def _wait_future(future: Any, timeout: float) -> bool:

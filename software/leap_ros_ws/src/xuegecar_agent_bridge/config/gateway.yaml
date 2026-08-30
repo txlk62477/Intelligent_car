@@ -8,3 +8,6 @@ xuegecar_agent_bridge:
     history_size: 100
     follow_default_timeout: 60.0
     follow_max_timeout: 300.0
+    camera_topic: "/camera/image_raw/compressed"
+    snapshot_dir: "/home/lk/car/data/snapshots"
+    snapshot_max_age: 5.0

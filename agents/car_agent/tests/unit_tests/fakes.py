@@ -16,10 +16,13 @@ class FakeRobotGateway:
         self,
         submit_results: list[dict[str, Any]] | None = None,
         poll_scripts: dict[str, list[dict[str, Any]]] | None = None,
+        *,
+        snapshot_script: list[dict[str, Any]] | None = None,
     ) -> None:
         self.submitted: list[dict[str, Any]] = []
         self.stop_calls = 0
         self.status_calls = 0
+        self.snapshot_calls = 0
         self._submit_results = list(submit_results or [])
         self._poll_scripts = {
             key: list(value) for key, value in (poll_scripts or {}).items()
@@ -27,6 +30,7 @@ class FakeRobotGateway:
         self._records: dict[str, dict[str, Any]] = {}
         self.follow_submitted: list[dict[str, Any]] = []
         self._follow_records: dict[str, dict[str, Any]] = {}
+        self._snapshot_script = list(snapshot_script or [])
 
     def get_status(self) -> dict[str, Any]:
         self.status_calls += 1
@@ -118,6 +122,17 @@ class FakeRobotGateway:
         record = self.get_follow(operation_id)
         record.update({"status": "CANCELLED", "error_code": "CANCELLED"})
         return record
+
+    def get_camera_snapshot(self) -> dict[str, Any]:
+        """按脚本逐次返回相机快照结果，脚本耗尽后返回固定路径。"""
+        self.snapshot_calls = getattr(self, "snapshot_calls", 0) + 1
+        if self._snapshot_script:
+            return dict(self._snapshot_script.pop(0))
+        return {
+            "status": "captured",
+            "path": "/tmp/snapshot_frame.jpg",
+            "format": "jpeg",
+        }
 
 
 class FailingRobotGateway(FakeRobotGateway):
