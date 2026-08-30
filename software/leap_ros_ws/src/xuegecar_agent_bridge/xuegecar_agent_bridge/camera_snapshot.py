@@ -34,6 +34,14 @@ class CameraSnapshotStore:
             self._latest = bytes(data)
             self._latest_at = time.monotonic()
 
+    def frame_age(self, now: float | None = None) -> float | None:
+        """返回最新相机帧的年龄（秒）；从未收到帧时返回 None。"""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            if self._latest_at is None:
+                return None
+            return max(0.0, now - self._latest_at)
+
     def capture(self) -> dict[str, Any]:
         """把最新帧写入快照目录；无帧、过期或写入失败时抛出领域错误。"""
         if self._output_dir is None:

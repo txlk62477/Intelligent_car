@@ -61,6 +61,10 @@ class PerceptionManagerNode(Node):
             response.error = f"YOLO 最大运行时间为 {maximum:g} 秒"
             return
         if self._process is not None:
+            # 已在运行：任务续租时延长截止时间（例如探测短租约内又启动跟随任务），
+            # 不打断当前 YOLO 进程。
+            if self._deadline is not None:
+                self._deadline = max(self._deadline, time.monotonic() + runtime)
             response.success = True
             response.state = "RUNNING"
             return

@@ -55,6 +55,10 @@ class RobotGateway(Protocol):
         """抓取小车相机最新帧并保存为本地文件。"""
         ...
 
+    def get_detections(self) -> dict[str, Any]:
+        """读取当前画面的 YOLO 检测快照。"""
+        ...
+
 
 class HttpRobotGateway:
     """通过本机 JSON/HTTP 调用 ROS2 Gateway。"""
@@ -97,6 +101,10 @@ class HttpRobotGateway:
     def get_camera_snapshot(self) -> dict[str, Any]:
         """抓取小车相机最新帧并保存为本地 jpeg 文件。"""
         return self._request("GET", "/v1/camera/snapshot")
+
+    def get_detections(self) -> dict[str, Any]:
+        """读取当前画面的 YOLO 检测快照。"""
+        return self._request("GET", "/v1/perception/detections")
 
     def _request(
         self,

@@ -11,3 +11,9 @@ xuegecar_agent_bridge:
     camera_topic: "/camera/image_raw/compressed"
     snapshot_dir: "/home/lk/car/data/snapshots"
     snapshot_max_age: 5.0
+    detections_topic: "/vision/detections"
+    detections_max_age: 1.5
+    detections_min_score: 0.35
+    detections_max_items: 8
+    detections_probe_timeout: 5.0
+    detections_probe_runtime: 20.0

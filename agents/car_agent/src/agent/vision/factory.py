@@ -18,7 +18,9 @@ from agent.vision.recognizer import (
 
 def build_vision_recognizer(provider: str | None = None) -> VisionRecognizer:
     """按显式参数或 `VISION_PROVIDER` 构建一个图像识别器。"""
-    provider_name = (provider or os.getenv("VISION_PROVIDER") or "ollama").strip().lower()
+    provider_name = (
+        (provider or os.getenv("VISION_PROVIDER") or "ollama").strip().lower()
+    )
     allowed_roots = _allowed_roots()
     adapter: VisionProvider
     if provider_name == "ollama":
@@ -68,7 +70,9 @@ def get_vision_recognizer() -> VisionRecognizer:
 def _allowed_roots() -> tuple[Path, ...]:
     configured = os.getenv("VISION_ALLOWED_IMAGE_DIRS", "").strip()
     if configured:
-        roots = tuple(Path(item).expanduser() for item in configured.split(os.pathsep) if item)
+        roots = tuple(
+            Path(item).expanduser() for item in configured.split(os.pathsep) if item
+        )
     else:
         roots = (_DEFAULT_IMAGE_ROOT,)
     return roots

@@ -11,6 +11,8 @@ from typing import Any
 
 import rclpy
 from leap_interfaces.action import ExecuteMotion, FollowTarget
+from leap_interfaces.msg import Detections
+from leap_interfaces.srv import SetPerception
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -21,6 +23,12 @@ from sensor_msgs.msg import CompressedImage
 from std_srvs.srv import Trigger
 
 from xuegecar_agent_bridge.camera_snapshot import CameraSnapshotStore
+from xuegecar_agent_bridge.detections import (
+    NO_FRAME,
+    TIMEOUT,
+    DetectionCache,
+    box_position,
+)
 from xuegecar_agent_bridge.errors import GatewayRejected
 from xuegecar_agent_bridge.http_server import GatewayHttpServer
 
@@ -65,6 +73,12 @@ class AgentGatewayNode(Node):
         self.declare_parameter("camera_topic", "/camera/image_raw/compressed")
         self.declare_parameter("snapshot_dir", "")
         self.declare_parameter("snapshot_max_age", 5.0)
+        self.declare_parameter("detections_topic", "/vision/detections")
+        self.declare_parameter("detections_max_age", 1.5)
+        self.declare_parameter("detections_min_score", 0.35)
+        self.declare_parameter("detections_max_items", 8)
+        self.declare_parameter("detections_probe_timeout", 5.0)
+        self.declare_parameter("detections_probe_runtime", 20.0)
 
         self._callbacks = ReentrantCallbackGroup()
         self._lock = Lock()
@@ -123,6 +137,29 @@ class AgentGatewayNode(Node):
             _video_qos(),
             callback_group=self._callbacks,
         )
+        self._detection_cache = DetectionCache(
+            max_age=float(self.get_parameter("detections_max_age").value),
+            min_score=float(self.get_parameter("detections_min_score").value),
+            max_items=int(self.get_parameter("detections_max_items").value),
+        )
+        self.create_subscription(
+            Detections,
+            str(self.get_parameter("detections_topic").value),
+            self._on_detections,
+            qos_profile_sensor_data,
+            callback_group=self._callbacks,
+        )
+        self._perception_client = self.create_client(
+            SetPerception,
+            "/perception/set_enabled",
+            callback_group=self._callbacks,
+        )
+        self._detections_probe_timeout = float(
+            self.get_parameter("detections_probe_timeout").value
+        )
+        self._detections_probe_runtime = float(
+            self.get_parameter("detections_probe_runtime").value
+        )
 
         host = str(self.get_parameter("http_host").value)
         port = int(self.get_parameter("http_port").value)
@@ -139,6 +176,7 @@ class AgentGatewayNode(Node):
             cancel_follow=self._cancel_follow,
             stop=self._stop,
             snapshot=self._snapshot_store.capture,
+            detections=self._read_detections,
         )
         self._http.start()
         self.get_logger().info(f"Agent Gateway listening on http://{host}:{port}")
@@ -432,6 +470,62 @@ class AgentGatewayNode(Node):
     def _on_camera_frame(self, message: CompressedImage) -> None:
         """缓存相机最新压缩帧，供 /v1/camera/snapshot 落盘。"""
         self._snapshot_store.store(bytes(message.data), str(message.format))
+
+    def _on_detections(self, message: Detections) -> None:
+        """解析并缓存最新一帧 YOLO 检测结果。"""
+        width = int(message.image_width)
+        height = int(message.image_height)
+        items = []
+        for item in message.detections:
+            x1, x2 = float(item.x1), float(item.x2)
+            items.append(
+                {
+                    "label": str(item.label),
+                    "score": round(float(item.score), 4),
+                    "position": box_position(x1, x2, width),
+                    "x1": round(x1, 1),
+                    "y1": round(float(item.y1), 1),
+                    "x2": round(x2, 1),
+                    "y2": round(float(item.y2), 1),
+                }
+            )
+        self._detection_cache.store(items, width, height)
+
+    def _read_detections(self) -> dict[str, Any]:
+        """返回新鲜检测快照；过期时按需临时拉起 YOLO 再等待。"""
+        fresh = self._detection_cache.fresh()
+        if fresh is not None:
+            return fresh
+        camera_age = self._snapshot_store.frame_age()
+        if camera_age is None or camera_age > float(
+            self.get_parameter("snapshot_max_age").value
+        ):
+            return {"status": NO_FRAME, "detections": []}
+        if not self._set_perception(True, self._detections_probe_runtime):
+            raise GatewayRejected("UNAVAILABLE", "感知服务不可用，无法启动 YOLO")
+        deadline = time.monotonic() + self._detections_probe_timeout
+        while time.monotonic() < deadline:
+            fresh = self._detection_cache.fresh()
+            if fresh is not None:
+                return fresh
+            time.sleep(0.1)
+        return {"status": TIMEOUT, "detections": []}
+
+    def _set_perception(self, enabled: bool, runtime: float) -> bool:
+        """同步调用感知管理器启停 YOLO；成功返回 True。"""
+        if not self._perception_client.wait_for_service(timeout_sec=2.0):
+            return False
+        request = SetPerception.Request()
+        request.enabled = enabled
+        request.max_runtime_seconds = float(runtime)
+        future = self._perception_client.call_async(request)
+        if not _wait_future(future, self._action_timeout):
+            return False
+        try:
+            response = future.result()
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(response.success)
 
     def _validate_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:

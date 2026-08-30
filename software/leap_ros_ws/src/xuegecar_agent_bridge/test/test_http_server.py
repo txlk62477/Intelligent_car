@@ -40,6 +40,7 @@ def test_http_routes_status_submit_operation_and_stop():
             "path": "/tmp/snapshot_1.jpg",
             "format": "jpeg",
         },
+        detections=lambda: {"status": "DETECTED", "detections": []},
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"
@@ -101,6 +102,7 @@ def test_http_camera_snapshot_route_and_rejection():
         cancel_follow=lambda _operation_id: {},
         stop=dict,
         snapshot=snapshot,
+        detections=dict,
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"
@@ -128,6 +130,7 @@ def test_http_camera_snapshot_returns_captured_frame():
         cancel_follow=lambda _operation_id: {},
         stop=dict,
         snapshot=lambda: {"status": "captured", "path": "/tmp/frame.jpg"},
+        detections=dict,
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"
@@ -135,6 +138,34 @@ def test_http_camera_snapshot_returns_captured_frame():
         status, body = request_json(base_url, "/v1/camera/snapshot")
         assert status == 200
         assert body["path"] == "/tmp/frame.jpg"
+    finally:
+        server.close()
+
+
+def test_http_perception_detections_route():
+    server = GatewayHttpServer(
+        "127.0.0.1",
+        0,
+        status=dict,
+        operation=lambda _operation_id: None,
+        submit=dict,
+        follow_operation=lambda _operation_id: None,
+        submit_follow=dict,
+        cancel_follow=lambda _operation_id: {},
+        stop=dict,
+        snapshot=dict,
+        detections=lambda: {
+            "status": "DETECTED",
+            "detections": [{"label": "cup", "score": 0.9, "position": "中央"}],
+        },
+    )
+    server.start()
+    base_url = f"http://{server.address[0]}:{server.address[1]}"
+    try:
+        status, body = request_json(base_url, "/v1/perception/detections")
+        assert status == 200
+        assert body["status"] == "DETECTED"
+        assert body["detections"][0]["label"] == "cup"
     finally:
         server.close()
 
@@ -154,6 +185,7 @@ def test_http_maps_domain_rejection_to_json_error():
         cancel_follow=lambda _operation_id: {},
         stop=dict,
         snapshot=dict,
+        detections=dict,
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"

@@ -60,7 +60,9 @@ async def test_ollama_sends_raw_base64_and_generation_options(
     assert payload["options"] == {"temperature": 0, "num_predict": 64}
 
 
-async def test_baidu_submits_raw_base64_then_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_baidu_submits_raw_base64_then_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, dict[str, Any] | None]] = []
     responses = iter(
         [
@@ -70,7 +72,9 @@ async def test_baidu_submits_raw_base64_then_polls(monkeypatch: pytest.MonkeyPat
         ]
     )
 
-    def fake_request(url: str, payload: dict[str, Any] | None, *, timeout: float) -> dict[str, Any]:
+    def fake_request(
+        url: str, payload: dict[str, Any] | None, *, timeout: float
+    ) -> dict[str, Any]:
         calls.append((url, payload))
         return next(responses)
 

@@ -72,7 +72,9 @@ class BaiduVisionAdapter:
                     self._invalidate_token()
         if last_error is not None:
             raise last_error
-        raise VisionRecognitionError("BAIDU_ERROR", "百度图像识别失败。", retryable=True)
+        raise VisionRecognitionError(
+            "BAIDU_ERROR", "百度图像识别失败。", retryable=True
+        )
 
     def _recognize_once(self, image_b64: str, question: str) -> str:
         token = self._get_access_token()
@@ -161,7 +163,9 @@ class BaiduVisionAdapter:
 
 
 class _RetryBaiduError(VisionRecognitionError):
-    def __init__(self, code: str, message: str, *, invalidate_token: bool = False) -> None:
+    def __init__(
+        self, code: str, message: str, *, invalidate_token: bool = False
+    ) -> None:
         super().__init__(code, message, retryable=True)
         self.invalidate_token = invalidate_token
 
@@ -172,7 +176,11 @@ def _request_json(
     *,
     timeout: float,
 ) -> dict[str, Any]:
-    body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = (
+        None
+        if payload is None
+        else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    )
     headers = {"Accept": "application/json"}
     if payload is not None:
         headers["Content-Type"] = "application/json"
@@ -203,20 +211,28 @@ def _request_json(
             "PROVIDER_INVALID_RESPONSE", "百度返回了无效 JSON。", retryable=True
         ) from error
     if not isinstance(result, dict):
-        raise VisionRecognitionError("PROVIDER_INVALID_RESPONSE", "百度返回了非对象 JSON。")
+        raise VisionRecognitionError(
+            "PROVIDER_INVALID_RESPONSE", "百度返回了非对象 JSON。"
+        )
     return result
 
 
-def _classify_baidu_error(result: dict[str, Any], fallback: str) -> VisionRecognitionError:
+def _classify_baidu_error(
+    result: dict[str, Any], fallback: str
+) -> VisionRecognitionError:
     """识别百度错误码；216630 等临时错误只进行有限重试。"""
     details = result.get("result")
     details = details if isinstance(details, dict) else {}
-    raw_code = details.get("error_code", result.get("error_code", details.get("ret_code")))
+    raw_code = details.get(
+        "error_code", result.get("error_code", details.get("ret_code"))
+    )
     try:
         code = int(raw_code) if raw_code is not None else 0
     except (TypeError, ValueError):
         code = 0
-    message = details.get("error_msg") or details.get("ret_msg") or result.get("error_msg")
+    message = (
+        details.get("error_msg") or details.get("ret_msg") or result.get("error_msg")
+    )
     safe_message = str(message) if message else fallback
     if code in {110, 111}:
         return _RetryBaiduError(f"BAIDU_{code}", safe_message, invalidate_token=True)

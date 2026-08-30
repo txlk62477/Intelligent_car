@@ -11,7 +11,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-import agent.tools.perception as perception_tools
 import agent.tools.robot as robot_tools
 import agent.tools.vision as vision_tools
 from agent.supervisor.graph import build_car_agent_graph
@@ -103,7 +102,9 @@ async def test_image_tool_routes_through_supervisor(
     image_path = "/home/lk/car/test/fixtures/esp_vga_q20.jpg"
 
     class FakeRecognizer:
-        async def recognize(self, path: Any, question: str | None = None) -> VisionResult:
+        async def recognize(
+            self, path: Any, question: str | None = None
+        ) -> VisionResult:
             assert str(path) == image_path
             assert question == "这个是什么？"
             return VisionResult(
@@ -255,7 +256,7 @@ async def test_unknown_tool_call_is_rejected() -> None:
     assert "not a valid tool" in tools[0].content
 
 
-async def test_graph_uses_direct_tools_and_motion_handoff_nodes() -> None:
+async def test_graph_uses_direct_tools_and_handoff_nodes() -> None:
     app = _build_app(FakeChatModel(), FakeRobotGateway())
 
     node_names = set(app.get_graph().nodes)
@@ -263,42 +264,66 @@ async def test_graph_uses_direct_tools_and_motion_handoff_nodes() -> None:
     assert "direct_tools" in node_names
     assert "prepare_motion_handoff" in node_names
     assert "relative_motion_workflow" in node_names
+    assert "prepare_follow_handoff" in node_names
+    assert "follow_workflow" in node_names
     assert "run_tool" not in node_names
 
 
-def test_supervisor_binds_image_recognition_tool() -> None:
+def test_supervisor_binds_detection_and_follow_handoff_tools() -> None:
     model = FakeChatModel()
     _build_app(model, FakeRobotGateway())
 
     names = {tool.name for tool in model.bound_tools}
 
     assert "recognize_image" in names
-    assert "start_follow_target" in names
-    assert "get_follow_task_status" in names
-    assert "cancel_follow_task" in names
+    assert "get_perception_detections" in names
+    assert "delegate_to_follow_workflow" in names
+    assert "start_follow_target" not in names
+    assert "get_follow_task_status" not in names
+    assert "cancel_follow_task" not in names
 
 
-async def test_follow_tool_submits_high_level_task(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gateway = FakeRobotGateway()
-    monkeypatch.setattr(perception_tools, "get_robot_gateway", lambda: gateway)
+async def test_follow_delegation_resolves_candidates_and_reports_selection() -> None:
+    gateway = FakeRobotGateway(
+        detections_script=[
+            {
+                "status": "DETECTED",
+                "detections": [
+                    {"label": "person", "score": 0.95, "position": "左侧"},
+                    {"label": "bottle", "score": 0.87, "position": "中央"},
+                ],
+            }
+        ],
+        submit_results=[
+            {
+                "status": "TIMED_OUT",
+                "error_code": "TASK_TIMEOUT",
+                "target_visible": True,
+            }
+        ],
+    )
     model = FakeChatModel(
         [
             tool_call_ai(
-                "start_follow_target",
+                "delegate_to_follow_workflow",
                 {"target_label": "cup", "timeout_seconds": 60},
             ),
-            AIMessage(content="已开始跟随水杯。"),
+            AIMessage(content="已按你的选择跟踪 bottle 至时限结束。"),
         ]
     )
     app = _build_app(model, gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "sup-follow-1"}}
 
-    result = await app.ainvoke(
-        {"messages": [("user", "跟随水杯")]}, config=_config("sup-follow-1")
-    )
+    interrupted = await app.ainvoke({"messages": [("user", "跟随水杯")]}, config=config)
+    assert interrupted["__interrupt__"], "目标不存在时应出现候选选择中断"
+
+    result = await app.ainvoke(Command(resume={"answer": "2"}), config=config)
 
     assert len(gateway.follow_submitted) == 1
-    assert gateway.follow_submitted[0]["target_label"] == "cup"
-    assert gateway.follow_submitted[0]["timeout_seconds"] == 60
-    assert result["messages"][-1].content == "已开始跟随水杯。"
+    assert gateway.follow_submitted[0]["target_label"] == "bottle"
+    tools = _tool_messages(result)
+    assert any(tool.name == "delegate_to_follow_workflow" for tool in tools)
+    handed = json.loads(tools[-1].content)
+    assert handed["status"] == "success"
+    assert handed["target_label"] == "bottle"
+    assert result["messages"][-1].content == "已按你的选择跟踪 bottle 至时限结束。"

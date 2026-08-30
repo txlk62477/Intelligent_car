@@ -48,6 +48,7 @@ class GatewayHttpServer:
         cancel_follow: Callable[[str], dict[str, Any]],
         stop: Callable[[], dict[str, Any]],
         snapshot: Callable[[], dict[str, Any]],
+        detections: Callable[[], dict[str, Any]],
     ) -> None:
         # Handler 通过闭包持有这些业务回调。HTTP 层只处理协议，不依赖 ROS2。
         handler = _handler_factory(
@@ -59,6 +60,7 @@ class GatewayHttpServer:
             cancel_follow=cancel_follow,
             stop=stop,
             snapshot=snapshot,
+            detections=detections,
         )
         # 每个 HTTP 请求可由独立线程处理；真正的运动状态由 node.py 负责同步。
         self._server = ThreadingHTTPServer((host, port), handler)
@@ -99,6 +101,7 @@ def _handler_factory(
     cancel_follow: Callable[[str], dict[str, Any]],
     stop: Callable[[], dict[str, Any]],
     snapshot: Callable[[], dict[str, Any]],
+    detections: Callable[[], dict[str, Any]],
 ) -> type[BaseHTTPRequestHandler]:
     # 工厂把节点提供的回调封装进 Handler 类，避免使用全局节点对象。
     class Handler(BaseHTTPRequestHandler):
@@ -137,6 +140,13 @@ def _handler_factory(
                 try:
                     # 抓取相机最新帧并落盘；无帧、断流等以领域错误码返回。
                     self._write_json(200, snapshot())
+                except GatewayRejected as error:
+                    self._write_rejection(error)
+                return
+            if self.path == "/v1/perception/detections":
+                try:
+                    # 返回新鲜检测快照；必要时 Gateway 会临时拉起 YOLO。
+                    self._write_json(200, detections())
                 except GatewayRejected as error:
                     self._write_rejection(error)
                 return

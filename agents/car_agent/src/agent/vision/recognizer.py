@@ -174,7 +174,9 @@ class DefaultVisionRecognizer:
         except VisionRecognitionError:
             raise
         except (OSError, ValueError) as error:
-            raise VisionRecognitionError("IMAGE_READ_ERROR", f"无法读取图片：{error}") from error
+            raise VisionRecognitionError(
+                "IMAGE_READ_ERROR", f"无法读取图片：{error}"
+            ) from error
         except Exception as error:
             raise VisionRecognitionError(
                 "INTERNAL_ERROR", "图像识别模块发生内部错误。"
@@ -195,7 +197,9 @@ class DefaultVisionRecognizer:
         try:
             resolved = candidate.resolve(strict=True)
         except FileNotFoundError as error:
-            raise VisionRecognitionError("IMAGE_NOT_FOUND", "图片文件不存在。") from error
+            raise VisionRecognitionError(
+                "IMAGE_NOT_FOUND", "图片文件不存在。"
+            ) from error
         if not resolved.is_file():
             raise VisionRecognitionError("IMAGE_NOT_FOUND", "图片路径不是普通文件。")
         if not any(_is_relative_to(resolved, root) for root in self._allowed_roots):
@@ -205,7 +209,9 @@ class DefaultVisionRecognizer:
         try:
             size = resolved.stat().st_size
         except OSError as error:
-            raise VisionRecognitionError("IMAGE_READ_ERROR", "无法读取图片文件信息。") from error
+            raise VisionRecognitionError(
+                "IMAGE_READ_ERROR", "无法读取图片文件信息。"
+            ) from error
         if size > self._max_image_bytes:
             raise VisionRecognitionError(
                 "IMAGE_TOO_LARGE",

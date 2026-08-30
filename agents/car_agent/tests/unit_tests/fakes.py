@@ -18,6 +18,7 @@ class FakeRobotGateway:
         poll_scripts: dict[str, list[dict[str, Any]]] | None = None,
         *,
         snapshot_script: list[dict[str, Any]] | None = None,
+        detections_script: list[dict[str, Any]] | None = None,
     ) -> None:
         self.submitted: list[dict[str, Any]] = []
         self.stop_calls = 0
@@ -31,6 +32,8 @@ class FakeRobotGateway:
         self.follow_submitted: list[dict[str, Any]] = []
         self._follow_records: dict[str, dict[str, Any]] = {}
         self._snapshot_script = list(snapshot_script or [])
+        self._detections_script = list(detections_script or [])
+        self.detections_calls = 0
 
     def get_status(self) -> dict[str, Any]:
         self.status_calls += 1
@@ -95,7 +98,7 @@ class FakeRobotGateway:
         return {"gateway_status": "IDLE"}
 
     def submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """创建内存视觉跟随记录。"""
+        """创建内存视觉跟随记录；可用 submit_results 脚本推入终态。"""
         operation_id = str(payload["operation_id"])
         previous = self._follow_records.get(operation_id)
         if previous is not None:
@@ -107,15 +110,21 @@ class FakeRobotGateway:
             "status": "STARTING",
             "target_visible": False,
         }
+        if self._submit_results:
+            record.update(dict(self._submit_results.pop(0)))
         self._follow_records[operation_id] = record
         return record
 
     def get_follow(self, operation_id: str) -> dict[str, Any]:
-        """查询内存视觉跟随记录。"""
+        """查询内存视觉跟随记录；可用 poll_scripts 脚本逐次推进。"""
         try:
-            return self._follow_records[operation_id]
+            record = self._follow_records[operation_id]
         except KeyError as error:
             raise RobotGatewayError("NOT_FOUND", "未知 operation_id") from error
+        script = self._poll_scripts.get(operation_id)
+        if script:
+            record.update(dict(script.pop(0)))
+        return record
 
     def cancel_follow(self, operation_id: str) -> dict[str, Any]:
         """取消内存视觉跟随记录。"""
@@ -134,11 +143,21 @@ class FakeRobotGateway:
             "format": "jpeg",
         }
 
+    def get_detections(self) -> dict[str, Any]:
+        """按脚本逐次返回检测快照，脚本耗尽后返回空检测。"""
+        self.detections_calls += 1
+        if self._detections_script:
+            return dict(self._detections_script.pop(0))
+        return {"status": "EMPTY", "detections": []}
+
 
 class FailingRobotGateway(FakeRobotGateway):
     """提交成功但后续查询持续失败的 Gateway。"""
 
     def get_motion(self, operation_id: str) -> dict[str, Any]:
+        raise RobotGatewayError("UNAVAILABLE", "Robot Gateway 不可用")
+
+    def get_follow(self, operation_id: str) -> dict[str, Any]:
         raise RobotGatewayError("UNAVAILABLE", "Robot Gateway 不可用")
 
 

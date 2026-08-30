@@ -53,12 +53,12 @@ source install/setup.bash
 
 当前架构由 LangGraph 与三个 ROS2 节点组成，中间以本机 HTTP JSON 和 ROS2 Action 衔接：
 
-- **LangGraph Agent Server**（`agents/car_agent`）：Supervisor 负责问答、状态、急停、短距离相对运动，创建、查询和取消按目标类别运行的视觉跟随任务，以及用视觉大模型识别本地图片或相机当前帧。
-- **Robot Gateway**（`software/leap_ros_ws/src/xuegecar_agent_bridge`）：只负责 HTTP/ROS2 协议适配和状态汇总，通过 ROS2 Action 提交任务，不直接发布速度；缓存相机压缩帧并按需保存为本地快照。
+- **LangGraph Agent Server**（`agents/car_agent`）：Supervisor 负责问答、状态、急停、短距离相对运动，用视觉大模型识别本地图片或相机当前帧，以及按需检测画面并委派视觉跟随子图（目标不存在时列出候选让用户选择）。
+- **Robot Gateway**（`software/leap_ros_ws/src/xuegecar_agent_bridge`）：只负责 HTTP/ROS2 协议适配和状态汇总，通过 ROS2 Action 提交任务，不直接发布速度；缓存相机压缩帧与 YOLO 检测结果，可按需临时拉起 YOLO。
 - **Motion Controller**（`software/leap_ros_ws/src/xuegecar_motion_controller`）：独占 `/cmd_vel`，执行相对位置控制和低速视觉跟随；同一时间只接受一个任务，急停除外。
 - **Perception Manager**（`software/leap_ros_ws/src/xuegecar_perception`）：空闲时不加载 YOLO；视觉任务开始时启动 YOLO 子进程，任务结束、取消或超时后关闭进程并释放资源。
 
-LangGraph 侧通过 `ROBOT_GATEWAY_URL`（默认 `http://127.0.0.1:8765`）调用 Gateway，不直接发布速度。视觉跟随根据目标框中心和相对初始面积控制方向与前后距离，默认运行 60 秒、最大 300 秒；当前不使用雷达避障。超过 3 米的长距离运动仍会被拒绝，后续交给 Nav2 Workflow。用户询问"当前画面/摄像头看到什么"且未给图片路径时，Agent 通过 Gateway 抓取相机最新帧（`/camera/image_raw/compressed`）保存到 `data/snapshots/` 再交给视觉模型识别。
+LangGraph 侧通过 `ROBOT_GATEWAY_URL`（默认 `http://127.0.0.1:8765`）调用 Gateway，不直接发布速度。视觉跟随根据目标框中心和相对初始面积控制方向与前后距离，默认运行 60 秒、最大 300 秒；当前不使用雷达避障。超过 3 米的长距离运动仍会被拒绝，后续交给 Nav2 Workflow。用户询问"当前画面/摄像头看到什么"且未给图片路径时，Agent 通过 Gateway 抓取相机最新帧（`/camera/image_raw/compressed`）保存到 `data/snapshots/` 再交给视觉模型识别；用户要求跟随某物体时，Agent 先读取当前 YOLO 检测列表（`/vision/detections`），目标不存在会列出候选物体让用户选择，存在则确认后开始跟随。
 
 ### 首次安装（Agent）
 
@@ -92,6 +92,7 @@ langgraph dev --no-browser
   - `POST /v1/follow-tasks/{id}/cancel`
   - `POST /v1/stop`
   - `GET /v1/camera/snapshot`（相机最新帧落盘到 `data/snapshots/`）
+  - `GET /v1/perception/detections`（YOLO 检测列表；必要时临时拉起 YOLO）
 
 实车运动需单独启动 Gateway 并确认周边安全；验证阶段不会主动让真实小车移动。
 
