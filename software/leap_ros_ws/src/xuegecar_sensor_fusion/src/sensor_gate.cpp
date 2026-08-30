@@ -1,18 +1,19 @@
 #include "xuegecar_sensor_fusion/sensor_gate.hpp"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace xuegecar_sensor_fusion
 {
 
-SourceStampGate::SourceStampGate(const SourceStampGateConfig & config)
+TimeMapper::TimeMapper(const TimeMapperConfig & config)
 : config_(config)
 {
-  if (!std::isfinite(config_.max_abs_offset_seconds) ||
-    config_.max_abs_offset_seconds <= 0.0)
+  if (!std::isfinite(config_.max_mapping_error_seconds) ||
+    config_.max_mapping_error_seconds <= 0.0)
   {
-    throw std::invalid_argument("max_abs_offset_seconds must be finite and positive");
+    throw std::invalid_argument("max_mapping_error_seconds must be finite and positive");
   }
   if (!std::isfinite(config_.reset_after_gap_seconds) ||
     config_.reset_after_gap_seconds <= 0.0)
@@ -21,49 +22,72 @@ SourceStampGate::SourceStampGate(const SourceStampGateConfig & config)
   }
 }
 
-SourceStampResult SourceStampGate::evaluate(
+TimeMapOutput TimeMapper::map(
   const std::int64_t source_nanoseconds,
-  const std::int64_t receipt_nanoseconds,
-  const double steady_receipt_seconds)
+  const std::int64_t ros_now_nanoseconds,
+  const double raw_receipt_seconds)
 {
-  if (source_nanoseconds <= 0 || receipt_nanoseconds <= 0 ||
-    !std::isfinite(steady_receipt_seconds))
+  if (source_nanoseconds <= 0 || ros_now_nanoseconds <= 0 ||
+    !std::isfinite(raw_receipt_seconds))
   {
-    return SourceStampResult::kInvalid;
+    return {TimeMapResult::kInvalid, 0};
   }
 
-  const auto max_offset_nanoseconds = static_cast<std::int64_t>(
-    config_.max_abs_offset_seconds * 1.0e9);
-  if (std::abs(receipt_nanoseconds - source_nanoseconds) > max_offset_nanoseconds) {
-    return SourceStampResult::kOffset;
+  if (!has_previous_) {
+    has_previous_ = true;
+    previous_source_nanoseconds_ = source_nanoseconds;
+    previous_mapped_nanoseconds_ = ros_now_nanoseconds;
+    previous_accepted_receipt_seconds_ = raw_receipt_seconds;
+    return {TimeMapResult::kMapped, ros_now_nanoseconds};
   }
 
-  if (has_previous_) {
-    const double receipt_gap =
-      steady_receipt_seconds - previous_accepted_receipt_seconds_;
-    if (receipt_gap <= 0.0) {
-      return SourceStampResult::kInvalid;
-    }
-    if (receipt_gap > config_.reset_after_gap_seconds) {
-      previous_source_nanoseconds_ = source_nanoseconds;
-      previous_accepted_receipt_seconds_ = steady_receipt_seconds;
-      return SourceStampResult::kReinitialized;
-    }
-    if (source_nanoseconds <= previous_source_nanoseconds_) {
-      return SourceStampResult::kNonMonotonic;
-    }
+  const double receipt_gap =
+    raw_receipt_seconds - previous_accepted_receipt_seconds_;
+  if (receipt_gap <= 0.0) {
+    return {TimeMapResult::kInvalid, 0};
+  }
+  if (receipt_gap > config_.reset_after_gap_seconds) {
+    return reinitialize(source_nanoseconds, ros_now_nanoseconds, raw_receipt_seconds);
+  }
+  if (source_nanoseconds <= previous_source_nanoseconds_) {
+    return {TimeMapResult::kNonMonotonic, 0};
   }
 
-  has_previous_ = true;
+  const std::int64_t source_delta = source_nanoseconds - previous_source_nanoseconds_;
+  if (source_delta >
+    std::numeric_limits<std::int64_t>::max() - previous_mapped_nanoseconds_)
+  {
+    return {TimeMapResult::kInvalid, 0};
+  }
+  const std::int64_t projected = previous_mapped_nanoseconds_ + source_delta;
+  const auto max_mapping_error_nanoseconds = static_cast<std::int64_t>(
+    config_.max_mapping_error_seconds * 1.0e9);
+  const bool mapping_error_exceeded =
+    std::abs(ros_now_nanoseconds - projected) > max_mapping_error_nanoseconds;
+
   previous_source_nanoseconds_ = source_nanoseconds;
-  previous_accepted_receipt_seconds_ = steady_receipt_seconds;
-  return SourceStampResult::kAccepted;
+  previous_mapped_nanoseconds_ = projected;
+  previous_accepted_receipt_seconds_ = raw_receipt_seconds;
+  return {TimeMapResult::kMapped, projected, mapping_error_exceeded};
 }
 
-void SourceStampGate::reset()
+TimeMapOutput TimeMapper::reinitialize(
+  const std::int64_t source_nanoseconds,
+  const std::int64_t ros_now_nanoseconds,
+  const double raw_receipt_seconds)
+{
+  has_previous_ = true;
+  previous_source_nanoseconds_ = source_nanoseconds;
+  previous_mapped_nanoseconds_ = ros_now_nanoseconds;
+  previous_accepted_receipt_seconds_ = raw_receipt_seconds;
+  return {TimeMapResult::kReinitialized, ros_now_nanoseconds};
+}
+
+void TimeMapper::reset()
 {
   has_previous_ = false;
   previous_source_nanoseconds_ = 0;
+  previous_mapped_nanoseconds_ = 0;
   previous_accepted_receipt_seconds_ = 0.0;
 }
 

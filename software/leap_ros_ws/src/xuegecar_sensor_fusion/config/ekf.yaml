@@ -6,7 +6,7 @@ ekf_filter_node:
     publish_tf: false
     publish_acceleration: false
     print_diagnostics: true
-    # 主机 ROS 时间回拨时清空滤波状态，避免旧时间轴上的未来观测阻塞更新。
+    # 正常实车运行由单调 /clock 保证不回拨；保留此项作为异常时钟源的兜底。
     reset_on_time_jump: true
 
     map_frame: map
@@ -14,8 +14,10 @@ ekf_filter_node:
     base_link_frame: base_link
     world_frame: odom
 
-    # 状态顺序：x, y, z, roll, pitch, yaw,
-    #           vx, vy, vz, vroll, vpitch, vyaw,
+    # 状态顺序：x, y, z,
+    #          roll, pitch, yaw,
+    #           vx, vy, vz,
+    #           vroll, vpitch, vyaw,
     #           ax, ay, az
     # EKF 内部运动模型负责 predict；轮式 vx、轮式 vyaw 与 IMU gyro_z
     # 作为三项观测 update，其中两路角速度共同更新同一个 vyaw 状态。

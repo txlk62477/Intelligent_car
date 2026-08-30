@@ -1,4 +1,5 @@
 #include "xuegecar_sensor_fusion/sensor_gate.hpp"
+#include "xuegecar_sensor_fusion/raw_monotonic_time.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -34,6 +35,7 @@ struct GateCounters
   std::uint64_t rejected_timestamp{0};
   std::uint64_t source_stamp_anomalies{0};
   std::uint64_t source_stamp_resets{0};
+  std::uint64_t source_clock_drift_samples{0};
   double last_receive_seconds{-1.0};
 };
 
@@ -76,7 +78,6 @@ class SensorGateNode final : public rclcpp::Node
 public:
   SensorGateNode()
   : Node("sensor_gate_node"),
-    steady_clock_(RCL_STEADY_TIME),
     odom_gate_(load_odom_gate_config()),
     odom_angular_gate_(load_odom_angular_gate_config()),
     imu_gate_(load_imu_gate_config()),
@@ -95,7 +96,7 @@ public:
     turn_odom_wz_stddev_ = declare_parameter<double>("turn_odom_wz_stddev", 0.16);
     arc_odom_wz_stddev_ = declare_parameter<double>("arc_odom_wz_stddev", 0.08);
     imu_gyro_z_stddev_ = declare_parameter<double>("imu_gyro_z_stddev", 0.08);
-    max_source_stamp_offset_ = declare_parameter<double>("max_source_stamp_offset", 0.25);
+    max_time_mapping_error_ = declare_parameter<double>("max_time_mapping_error", 0.25);
     source_stamp_reset_after_gap_ =
       declare_parameter<double>("source_stamp_reset_after_gap", 1.0);
     diagnostic_timeout_ = declare_parameter<double>("diagnostic_timeout", 0.3);
@@ -106,7 +107,7 @@ public:
     validate_positive_finite("turn_odom_wz_stddev", turn_odom_wz_stddev_);
     validate_positive_finite("arc_odom_wz_stddev", arc_odom_wz_stddev_);
     validate_positive_finite("imu_gyro_z_stddev", imu_gyro_z_stddev_);
-    validate_positive_finite("max_source_stamp_offset", max_source_stamp_offset_);
+    validate_positive_finite("max_time_mapping_error", max_time_mapping_error_);
     validate_positive_finite("source_stamp_reset_after_gap", source_stamp_reset_after_gap_);
     validate_positive_finite("diagnostic_timeout", diagnostic_timeout_);
     validate_positive_finite("diagnostic_period", diagnostic_period);
@@ -114,10 +115,10 @@ public:
       throw std::invalid_argument("imu_gyro_z_bias must be finite");
     }
 
-    odom_stamp_gate_ = std::make_unique<SourceStampGate>(SourceStampGateConfig{
-      max_source_stamp_offset_, source_stamp_reset_after_gap_});
-    imu_stamp_gate_ = std::make_unique<SourceStampGate>(SourceStampGateConfig{
-      max_source_stamp_offset_, source_stamp_reset_after_gap_});
+    odom_time_mapper_ = std::make_unique<TimeMapper>(TimeMapperConfig{
+      max_time_mapping_error_, source_stamp_reset_after_gap_});
+    imu_time_mapper_ = std::make_unique<TimeMapper>(TimeMapperConfig{
+      max_time_mapping_error_, source_stamp_reset_after_gap_});
 
     const auto filtered_odom_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
     odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(
@@ -209,23 +210,29 @@ private:
     }
   }
 
-  bool source_stamp_is_acceptable(
+  bool map_source_stamp(
     const builtin_interfaces::msg::Time & stamp,
-    const std::int64_t receipt_nanoseconds,
-    const double steady_receipt_seconds,
-    SourceStampGate & gate,
+    const std::int64_t ros_now_nanoseconds,
+    const double raw_receipt_seconds,
+    TimeMapper & mapper,
     GateCounters & counters,
-    bool & reinitialized)
+    bool & reinitialized,
+    std::int64_t & mapped_nanoseconds)
   {
     const std::int64_t current = stamp_nanoseconds(stamp);
-    const SourceStampResult result = gate.evaluate(
-      current, receipt_nanoseconds, steady_receipt_seconds);
-    reinitialized = result == SourceStampResult::kReinitialized;
+    const TimeMapOutput output = mapper.map(
+      current, ros_now_nanoseconds, raw_receipt_seconds);
+    if (output.mapping_error_exceeded) {
+      ++counters.source_clock_drift_samples;
+    }
+    reinitialized = output.result == TimeMapResult::kReinitialized;
     if (reinitialized) {
       ++counters.source_stamp_resets;
+      mapped_nanoseconds = output.mapped_nanoseconds;
       return true;
     }
-    if (result == SourceStampResult::kAccepted) {
+    if (output.result == TimeMapResult::kMapped) {
+      mapped_nanoseconds = output.mapped_nanoseconds;
       return true;
     }
     ++counters.source_stamp_anomalies;
@@ -268,16 +275,17 @@ private:
 
   void handle_odom(const nav_msgs::msg::Odometry::SharedPtr message)
   {
-    const rclcpp::Time steady_receipt_time = steady_clock_.now();
-    const rclcpp::Time receipt_time = now();
-    const double receipt_seconds = steady_receipt_time.seconds();
+    const rclcpp::Time ros_now = now();
+    const double receipt_seconds = raw_monotonic_now_seconds();
     ++odom_counters_.received;
     odom_counters_.last_receive_seconds = receipt_seconds;
 
     bool source_stamp_reinitialized = false;
-    if (!source_stamp_is_acceptable(
-        message->header.stamp, receipt_time.nanoseconds(), receipt_seconds,
-        *odom_stamp_gate_, odom_counters_, source_stamp_reinitialized))
+    std::int64_t mapped_nanoseconds = 0;
+    if (!map_source_stamp(
+        message->header.stamp, ros_now.nanoseconds(), receipt_seconds,
+        *odom_time_mapper_, odom_counters_, source_stamp_reinitialized,
+        mapped_nanoseconds))
     {
       release_motion_constraints();
       return;
@@ -288,18 +296,17 @@ private:
       release_motion_constraints();
     }
 
-    const double source_seconds =
-      static_cast<double>(stamp_nanoseconds(message->header.stamp)) * 1.0e-9;
+    const double mapped_seconds = static_cast<double>(mapped_nanoseconds) * 1.0e-9;
 
     const GateResult linear_result = odom_gate_.evaluate(
-      message->twist.twist.linear.x, source_seconds);
+      message->twist.twist.linear.x, mapped_seconds);
     if (linear_result != GateResult::kAccepted) {
       count_rejection(linear_result, odom_counters_);
       release_motion_constraints();
       return;
     }
     const GateResult angular_result = odom_angular_gate_.evaluate(
-      message->twist.twist.angular.z, source_seconds);
+      message->twist.twist.angular.z, mapped_seconds);
     if (angular_result != GateResult::kAccepted) {
       count_rejection(angular_result, odom_counters_);
       release_motion_constraints();
@@ -307,11 +314,13 @@ private:
     }
 
     const MotionPhase phase = motion_state_machine_.update(
-      message->twist.twist.linear.x, message->twist.twist.angular.z, source_seconds);
+      message->twist.twist.linear.x, message->twist.twist.angular.z, mapped_seconds);
     motion_phase_ = phase;
     stationary_constraint_active_ = phase == MotionPhase::kStationary;
 
     auto output = *message;
+    output.header.stamp = static_cast<builtin_interfaces::msg::Time>(
+      rclcpp::Time(mapped_nanoseconds, RCL_ROS_TIME));
     // EKF 使用轮式 vx 和 vyaw。将 MCU 位姿及其余速度维度明确标为未使用，
     // 避免全 0 协方差被其他消费者误解为“完全可信”。
     if (stationary_constraint_active_) {
@@ -345,16 +354,17 @@ private:
 
   void handle_imu(const sensor_msgs::msg::Imu::SharedPtr message)
   {
-    const rclcpp::Time steady_receipt_time = steady_clock_.now();
-    const rclcpp::Time receipt_time = now();
-    const double receipt_seconds = steady_receipt_time.seconds();
+    const rclcpp::Time ros_now = now();
+    const double receipt_seconds = raw_monotonic_now_seconds();
     ++imu_counters_.received;
     imu_counters_.last_receive_seconds = receipt_seconds;
 
     bool source_stamp_reinitialized = false;
-    if (!source_stamp_is_acceptable(
-        message->header.stamp, receipt_time.nanoseconds(), receipt_seconds,
-        *imu_stamp_gate_, imu_counters_, source_stamp_reinitialized))
+    std::int64_t mapped_nanoseconds = 0;
+    if (!map_source_stamp(
+        message->header.stamp, ros_now.nanoseconds(), receipt_seconds,
+        *imu_time_mapper_, imu_counters_, source_stamp_reinitialized,
+        mapped_nanoseconds))
     {
       return;
     }
@@ -362,15 +372,16 @@ private:
       imu_gate_.reset();
     }
 
-    const double source_seconds =
-      static_cast<double>(stamp_nanoseconds(message->header.stamp)) * 1.0e-9;
-    const GateResult result = imu_gate_.evaluate(message->angular_velocity.z, source_seconds);
+    const double mapped_seconds = static_cast<double>(mapped_nanoseconds) * 1.0e-9;
+    const GateResult result = imu_gate_.evaluate(message->angular_velocity.z, mapped_seconds);
     if (result != GateResult::kAccepted) {
       count_rejection(result, imu_counters_);
       return;
     }
 
     auto output = *message;
+    output.header.stamp = static_cast<builtin_interfaces::msg::Time>(
+      rclcpp::Time(mapped_nanoseconds, RCL_ROS_TIME));
     // imu_link 与 base_link 固定关节且 rpy=0 完全对齐（URDF imu_joint）。
     // 直接声明为 base_link，避免 EKF 因缺少 imu_link->base_link TF 丢弃 IMU。
     output.header.frame_id = "base_link";
@@ -403,6 +414,9 @@ private:
     } else if (age > diagnostic_timeout_) {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
       status.message = "sensor data stale";
+    } else if (counters.source_clock_drift_samples > 0) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      status.message = "source clock drift detected; MCU timeline preserved";
     } else {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
       status.message = "OK";
@@ -416,26 +430,28 @@ private:
     add_value(status, "rejected_timestamp", std::to_string(counters.rejected_timestamp));
     add_value(status, "source_stamp_anomalies", std::to_string(counters.source_stamp_anomalies));
     add_value(status, "source_stamp_resets", std::to_string(counters.source_stamp_resets));
+    add_value(
+      status, "source_clock_drift_samples",
+      std::to_string(counters.source_clock_drift_samples));
     add_value(status, "last_message_age_seconds", std::to_string(age));
     return status;
   }
 
   void publish_diagnostics()
   {
-    const rclcpp::Time steady_current_time = steady_clock_.now();
+    const double raw_current_seconds = raw_monotonic_now_seconds();
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = now();
-    auto odom_status = make_status("odom", odom_counters_, steady_current_time.seconds());
+    auto odom_status = make_status("odom", odom_counters_, raw_current_seconds);
     add_value(
       odom_status, "stationary_constraint_active",
-      stationary_constraint_is_fresh(steady_current_time.seconds()) ? "true" : "false");
+      stationary_constraint_is_fresh(raw_current_seconds) ? "true" : "false");
     add_value(odom_status, "motion_phase", motion_phase_name(motion_phase_));
     array.status.push_back(std::move(odom_status));
-    array.status.push_back(make_status("imu", imu_counters_, steady_current_time.seconds()));
+    array.status.push_back(make_status("imu", imu_counters_, raw_current_seconds));
     diagnostics_publisher_->publish(array);
   }
 
-  rclcpp::Clock steady_clock_;
   ScalarGate odom_gate_;
   ScalarGate odom_angular_gate_;
   ScalarGate imu_gate_;
@@ -451,7 +467,7 @@ private:
   double turn_odom_wz_stddev_{0.16};
   double arc_odom_wz_stddev_{0.08};
   double imu_gyro_z_stddev_{0.08};
-  double max_source_stamp_offset_{0.25};
+  double max_time_mapping_error_{0.25};
   double source_stamp_reset_after_gap_{1.0};
   double diagnostic_timeout_{0.3};
   bool stationary_constraint_active_{false};
@@ -459,8 +475,8 @@ private:
 
   GateCounters odom_counters_;
   GateCounters imu_counters_;
-  std::unique_ptr<SourceStampGate> odom_stamp_gate_;
-  std::unique_ptr<SourceStampGate> imu_stamp_gate_;
+  std::unique_ptr<TimeMapper> odom_time_mapper_;
+  std::unique_ptr<TimeMapper> imu_time_mapper_;
 
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;

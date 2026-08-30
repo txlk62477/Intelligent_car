@@ -40,9 +40,9 @@ sensor_gate_node:
     turn_odom_wz_stddev: 0.16                     # rad/s，原地转弯时轮式角速度置信度
     arc_odom_wz_stddev: 0.08                      # rad/s，弧线时轮式角速度置信度
 
-    # MCU 使用采样时的单调时钟并映射到 ROS epoch。主机保留源时间戳，拒绝旧包、
-    # 未来包和乱序包；断流足够久后允许新会话安全重建时间基准。
-    max_source_stamp_offset: 0.25        # s，源时间与接收时间最大允许偏差
+    # MCU 时间差映射到由 CLOCK_MONOTONIC_RAW 推进的 ROS /clock。连续流始终
+    # 保留 MCU dt；超过误差阈值只上报 source_clock_drift_samples，绝不跳时。
+    max_time_mapping_error: 0.25         # s，触发时钟漂移诊断的阈值
     source_stamp_reset_after_gap: 1.0    # s，超过此断流时长允许时间基准重建
 
     diagnostic_timeout: 0.3

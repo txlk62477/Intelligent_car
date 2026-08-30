@@ -34,99 +34,85 @@ MotionStateMachineConfig make_motion_config()
   };
 }
 
-SourceStampGate make_source_stamp_gate()
+TimeMapper make_time_mapper()
 {
-  return SourceStampGate(SourceStampGateConfig{
-    0.25,  // max absolute source/receipt offset
+  return TimeMapper(TimeMapperConfig{
+    0.25,  // maximum mapping error
     1.0}); // reset after accepted-message gap
 }
 
-TEST(SourceStampGateTest, AcceptsStrictlyIncreasingFreshStamps)
+TEST(TimeMapperTest, AnchorsFirstSourceStampToRosTime)
 {
-  auto gate = make_source_stamp_gate();
-  EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
-    SourceStampResult::kAccepted);
-  EXPECT_EQ(
-    gate.evaluate(1020000000LL, 1120000000LL, 1.02),
-    SourceStampResult::kAccepted);
+  auto mapper = make_time_mapper();
+  const auto output = mapper.map(1000000000LL, 9000000000LL, 1.0);
+  EXPECT_EQ(output.result, TimeMapResult::kMapped);
+  EXPECT_EQ(output.mapped_nanoseconds, 9000000000LL);
 }
 
-TEST(SourceStampGateTest, RejectsStaleAndFutureStamps)
+TEST(TimeMapperTest, PreservesMcuSampleDeltaDespiteReceiptJitter)
 {
-  auto gate = make_source_stamp_gate();
-  EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1300000000LL, 1.0),
-    SourceStampResult::kOffset);
-  EXPECT_EQ(
-    gate.evaluate(1300000000LL, 1000000000LL, 1.0),
-    SourceStampResult::kOffset);
+  auto mapper = make_time_mapper();
+  (void)mapper.map(1000000000LL, 9000000000LL, 1.0);
+  const auto output = mapper.map(1020000000LL, 9035000000LL, 1.035);
+  EXPECT_EQ(output.result, TimeMapResult::kMapped);
+  EXPECT_EQ(output.mapped_nanoseconds, 9020000000LL);
 }
 
-TEST(SourceStampGateTest, RejectsNonMonotonicStampWithoutPoisoningBaseline)
+TEST(TimeMapperTest, DoesNotCompareUnrelatedEpochOffsets)
 {
-  auto gate = make_source_stamp_gate();
-  EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
-    SourceStampResult::kAccepted);
-  EXPECT_EQ(
-    gate.evaluate(990000000LL, 1110000000LL, 1.01),
-    SourceStampResult::kNonMonotonic);
-  EXPECT_EQ(
-    gate.evaluate(1020000000LL, 1120000000LL, 1.02),
-    SourceStampResult::kAccepted);
+  auto mapper = make_time_mapper();
+  const auto first = mapper.map(1000000000LL, 900000000000000000LL, 1.0);
+  const auto second = mapper.map(1020000000LL, 900000000020000000LL, 1.02);
+  EXPECT_EQ(first.result, TimeMapResult::kMapped);
+  EXPECT_EQ(second.result, TimeMapResult::kMapped);
+  EXPECT_EQ(second.mapped_nanoseconds, first.mapped_nanoseconds + 20000000LL);
 }
 
-TEST(SourceStampGateTest, ReinitializesAfterLongAcceptedMessageGap)
+TEST(TimeMapperTest, RejectsNonMonotonicStampWithoutPoisoningBaseline)
 {
-  auto gate = make_source_stamp_gate();
+  auto mapper = make_time_mapper();
+  (void)mapper.map(1000000000LL, 9000000000LL, 1.0);
   EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
-    SourceStampResult::kAccepted);
-  EXPECT_EQ(
-    gate.evaluate(900000000LL, 1000000000LL, 2.01),
-    SourceStampResult::kReinitialized);
-  EXPECT_EQ(
-    gate.evaluate(920000000LL, 1020000000LL, 2.03),
-    SourceStampResult::kAccepted);
+    mapper.map(990000000LL, 9010000000LL, 1.01).result,
+    TimeMapResult::kNonMonotonic);
+  const auto output = mapper.map(1020000000LL, 9020000000LL, 1.02);
+  EXPECT_EQ(output.result, TimeMapResult::kMapped);
+  EXPECT_EQ(output.mapped_nanoseconds, 9020000000LL);
 }
 
-TEST(SourceStampGateTest, ReinitializesAfterLongGapEvenWhenStampKeepsIncreasing)
+TEST(TimeMapperTest, ReinitializesAfterLongAcceptedMessageGap)
 {
-  auto gate = make_source_stamp_gate();
-  EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
-    SourceStampResult::kAccepted);
-  EXPECT_EQ(
-    gate.evaluate(2000000000LL, 2100000000LL, 2.01),
-    SourceStampResult::kReinitialized);
-  EXPECT_EQ(
-    gate.evaluate(2020000000LL, 2120000000LL, 2.03),
-    SourceStampResult::kAccepted);
+  auto mapper = make_time_mapper();
+  (void)mapper.map(1000000000LL, 9000000000LL, 1.0);
+  const auto reset = mapper.map(900000000LL, 10000000000LL, 2.01);
+  EXPECT_EQ(reset.result, TimeMapResult::kReinitialized);
+  EXPECT_EQ(reset.mapped_nanoseconds, 10000000000LL);
+  const auto next = mapper.map(920000000LL, 10020000000LL, 2.03);
+  EXPECT_EQ(next.result, TimeMapResult::kMapped);
+  EXPECT_EQ(next.mapped_nanoseconds, 10020000000LL);
 }
 
-TEST(SourceStampGateTest, InvalidOrStaleMessagesDoNotConsumeReconnectGap)
+TEST(TimeMapperTest, PreservesContinuousMcuTimelineWhenRosClockRunsFaster)
 {
-  auto gate = make_source_stamp_gate();
-  EXPECT_EQ(
-    gate.evaluate(1000000000LL, 1100000000LL, 1.0),
-    SourceStampResult::kAccepted);
-  EXPECT_EQ(
-    gate.evaluate(500000000LL, 2000000000LL, 2.0),
-    SourceStampResult::kOffset);
-  EXPECT_EQ(
-    gate.evaluate(900000000LL, 1000000000LL, 2.01),
-    SourceStampResult::kReinitialized);
+  auto mapper = make_time_mapper();
+  (void)mapper.map(1000000000LL, 9000000000LL, 1.0);
+  const auto output = mapper.map(1500000000LL, 9800000000LL, 1.5);
+  EXPECT_EQ(output.result, TimeMapResult::kMapped);
+  EXPECT_EQ(output.mapped_nanoseconds, 9500000000LL);
+  EXPECT_TRUE(output.mapping_error_exceeded);
 }
 
-TEST(SourceStampGateTest, RejectsInvalidConfiguration)
+TEST(TimeMapperTest, RejectsInvalidConfigurationAndInput)
 {
   EXPECT_THROW(
-    SourceStampGate(SourceStampGateConfig{0.0, 1.0}),
+    TimeMapper(TimeMapperConfig{0.0, 1.0}),
     std::invalid_argument);
   EXPECT_THROW(
-    SourceStampGate(SourceStampGateConfig{0.25, 0.0}),
+    TimeMapper(TimeMapperConfig{0.25, 0.0}),
     std::invalid_argument);
+  auto mapper = make_time_mapper();
+  EXPECT_EQ(mapper.map(0, 9000000000LL, 1.0).result, TimeMapResult::kInvalid);
+  EXPECT_EQ(mapper.map(1000000000LL, 0, 1.0).result, TimeMapResult::kInvalid);
 }
 
 TEST(ScalarGateTest, AcceptsFiniteValuesWithinMagnitude)

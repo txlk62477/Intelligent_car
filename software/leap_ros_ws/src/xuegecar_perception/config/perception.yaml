@@ -1,0 +1,24 @@
+yolo_detect_node:
+  ros__parameters:
+    image_topic: "/camera/image_raw/compressed"
+    result_topic: "/vision/detections"
+    annotated_topic: "/vision/annotated/compressed"
+    annotated_raw_topic: "/vision/annotated"
+    publish_annotated_raw: false
+    model_path: "/home/lk/car/test/yolo_detection/models/yolov8n.onnx"
+    yolo_module_dir: "/home/lk/car/test/yolo_detection"
+    imgsz: 640
+    conf: 0.25
+    iou: 0.45
+    device: "auto"
+    log_period_s: 1.0
+    jpeg_quality: 85
+    warmup_timeout_s: 20.0
+
+sim_camera_publisher:
+  ros__parameters:
+    topic: "/camera/image_raw/compressed"
+    image_path: "/home/lk/car/test/yolo_detection/samples/bus.jpg"
+    fps: 20.0
+    jpeg_quality: 85
+    frame_id: "camera_link"

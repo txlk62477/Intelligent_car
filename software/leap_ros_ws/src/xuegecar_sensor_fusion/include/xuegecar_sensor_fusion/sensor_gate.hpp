@@ -15,36 +15,48 @@ enum class GateResult : std::uint8_t
   kRate,
 };
 
-enum class SourceStampResult : std::uint8_t
+enum class TimeMapResult : std::uint8_t
 {
-  kAccepted,
+  kMapped,
   kReinitialized,
   kInvalid,
-  kOffset,
   kNonMonotonic,
 };
 
-struct SourceStampGateConfig
+struct TimeMapperConfig
 {
-  double max_abs_offset_seconds{0.0};
+  double max_mapping_error_seconds{0.0};
   double reset_after_gap_seconds{0.0};
 };
 
-class SourceStampGate
+struct TimeMapOutput
+{
+  TimeMapResult result{TimeMapResult::kInvalid};
+  std::int64_t mapped_nanoseconds{0};
+  bool mapping_error_exceeded{false};
+};
+
+class TimeMapper
 {
 public:
-  explicit SourceStampGate(const SourceStampGateConfig & config);
+  explicit TimeMapper(const TimeMapperConfig & config);
 
-  SourceStampResult evaluate(
+  TimeMapOutput map(
     std::int64_t source_nanoseconds,
-    std::int64_t receipt_nanoseconds,
-    double steady_receipt_seconds);
+    std::int64_t ros_now_nanoseconds,
+    double raw_receipt_seconds);
   void reset();
 
 private:
-  SourceStampGateConfig config_;
+  TimeMapOutput reinitialize(
+    std::int64_t source_nanoseconds,
+    std::int64_t ros_now_nanoseconds,
+    double raw_receipt_seconds);
+
+  TimeMapperConfig config_;
   bool has_previous_{false};
   std::int64_t previous_source_nanoseconds_{0};
+  std::int64_t previous_mapped_nanoseconds_{0};
   double previous_accepted_receipt_seconds_{0.0};
 };
 

@@ -3,8 +3,10 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import AndSubstitution, LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -12,6 +14,9 @@ def generate_launch_description():
 
     gate_config = LaunchConfiguration("gate_config")
     ekf_config = LaunchConfiguration("ekf_config")
+    use_sim_time = ParameterValue(
+        LaunchConfiguration("use_sim_time"), value_type=bool
+    )
 
     return LaunchDescription(
         [
@@ -25,19 +30,42 @@ def generate_launch_description():
                 default_value=str(package_share / "config" / "ekf.yaml"),
                 description="robot_localization EKF parameter file",
             ),
+            DeclareLaunchArgument(
+                "use_sim_time",
+                default_value="true",
+                description="Use the monotonic /clock published by this launch",
+            ),
+            DeclareLaunchArgument(
+                "start_clock",
+                default_value="true",
+                description="Start the live monotonic /clock publisher",
+            ),
+            Node(
+                package="xuegecar_sensor_fusion",
+                executable="monotonic_clock_node",
+                name="monotonic_clock_node",
+                output="screen",
+                parameters=[{"frequency": 100.0}],
+                condition=IfCondition(
+                    AndSubstitution(
+                        LaunchConfiguration("use_sim_time"),
+                        LaunchConfiguration("start_clock"),
+                    )
+                ),
+            ),
             Node(
                 package="xuegecar_sensor_fusion",
                 executable="sensor_gate_node",
                 name="sensor_gate_node",
                 output="screen",
-                parameters=[gate_config],
+                parameters=[gate_config, {"use_sim_time": use_sim_time}],
             ),
             Node(
                 package="robot_localization",
                 executable="ekf_node",
                 name="ekf_filter_node",
                 output="screen",
-                parameters=[ekf_config],
+                parameters=[ekf_config, {"use_sim_time": use_sim_time}],
                 remappings=[("odometry/filtered", "/odometry/filtered")],
             ),
         ]
