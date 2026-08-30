@@ -1,5 +1,8 @@
 """Agent 全局配置与图编译检查。"""
 
+import json
+from pathlib import Path
+
 from langgraph.pregel import Pregel
 
 from agent.follow_graph import graph as follow_graph
@@ -52,6 +55,17 @@ def test_follow_workflow_is_available_as_standalone_graph() -> None:
     output_schema = follow_graph.get_output_jsonschema()
     assert output_schema["required"] == ["follow_result"]
     assert set(output_schema["properties"]) == {"follow_result"}
+
+
+def test_langgraph_studio_registers_all_standalone_graphs() -> None:
+    """langgraph.json 应注册三个可独立调试的图（含跟随子图）。"""
+    config_path = Path(__file__).resolve().parents[2] / "langgraph.json"
+    config = json.loads(config_path.read_text())
+
+    graphs = config["graphs"]
+    assert graphs["car_agent"].endswith("graph.py:graph")
+    assert graphs["relative_motion_workflow"].endswith("motion_graph.py:graph")
+    assert graphs["follow_workflow"].endswith("follow_graph.py:graph")
 
 
 def test_supervisor_prompt_defines_routing_and_limits() -> None:

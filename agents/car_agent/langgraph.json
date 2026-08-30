@@ -3,7 +3,8 @@
   "dependencies": ["."],
   "graphs": {
     "car_agent": "./src/agent/graph.py:graph",
-    "relative_motion_workflow": "./src/agent/motion_graph.py:graph"
+    "relative_motion_workflow": "./src/agent/motion_graph.py:graph",
+    "follow_workflow": "./src/agent/follow_graph.py:graph"
   },
   "env": ".env",
   "image_distro": "wolfi"
