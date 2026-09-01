@@ -1,7 +1,7 @@
 xuegecar_motion_controller:
   ros__parameters:
     odom_topic: "/odometry/filtered"
-    cmd_vel_topic: "/cmd_vel"
+    cmd_vel_topic: "/cmd_vel_agent"
     detections_topic: "/vision/detections"
     control_rate_hz: 20.0
 

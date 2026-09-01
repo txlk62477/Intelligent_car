@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 
 from agent.common.robot_gateway import (
@@ -222,6 +223,7 @@ def build_location_workflow(
     gateway_factory: Callable[[], RobotGateway] = get_robot_gateway,
     name: str = "map_location_workflow",
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
 ):
     """构建地图位置教学/删除子图。"""
     nodes = LocationWorkflowNodes(gateway_factory)
@@ -230,9 +232,9 @@ def build_location_workflow(
         input_schema=LocationWorkflowInput,
         output_schema=LocationWorkflowOutput,
     )
-    builder.add_node("prepare", nodes.prepare)
+    builder.add_node("prepare", nodes.prepare)  # type: ignore[call-overload,arg-type]
     builder.add_node("confirm", nodes.confirm)
-    builder.add_node("commit", nodes.commit)
+    builder.add_node("commit", nodes.commit)  # type: ignore[call-overload,arg-type]
     builder.add_node("finish", nodes.finish)
     builder.add_edge(START, "prepare")
     builder.add_conditional_edges(
@@ -253,7 +255,7 @@ def build_location_workflow(
     )
     builder.add_edge("commit", "finish")
     builder.add_edge("finish", END)
-    return builder.compile(name=name, checkpointer=checkpointer)
+    return builder.compile(name=name, checkpointer=checkpointer, store=store)
 
 
 def _validated_map_pose(status: dict[str, Any]) -> tuple[str, MapPose]:

@@ -51,6 +51,11 @@ install(
 )
 
 install(
+  DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
   DIRECTORY maps rviz
   DESTINATION share/${PROJECT_NAME}
 )

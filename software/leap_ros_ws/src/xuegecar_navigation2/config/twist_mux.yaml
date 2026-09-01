@@ -1,0 +1,22 @@
+twist_mux:
+  ros__parameters:
+    # Motion Controller 与当前 Nav2 参数均使用 geometry_msgs/Twist。
+    use_stamped: false
+    topics:
+      navigation:
+        topic: /cmd_vel_nav
+        timeout: 0.5
+        priority: 100
+      agent_motion:
+        topic: /cmd_vel_agent
+        timeout: 0.3
+        priority: 150
+      manual:
+        topic: /cmd_vel_teleop
+        timeout: 0.5
+        priority: 200
+    locks:
+      emergency_stop:
+        topic: /cmd_vel_emergency_lock
+        timeout: 0.5
+        priority: 255

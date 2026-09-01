@@ -19,6 +19,7 @@ class FakeRobotGateway:
         *,
         snapshot_script: list[dict[str, Any]] | None = None,
         detections_script: list[dict[str, Any]] | None = None,
+        navigation_status: dict[str, Any] | None = None,
     ) -> None:
         self.submitted: list[dict[str, Any]] = []
         self.stop_calls = 0
@@ -34,6 +35,15 @@ class FakeRobotGateway:
         self._snapshot_script = list(snapshot_script or [])
         self._detections_script = list(detections_script or [])
         self.detections_calls = 0
+        self.navigation_status = navigation_status or {
+            "status": "READY",
+            "map_id": "sha256:test-map",
+            "map_name": "test-map",
+            "frame_id": "map",
+            "pose": {"x": 1.0, "y": 2.0, "yaw": 0.5, "frame_id": "map"},
+        }
+        self.navigation_submitted: list[dict[str, Any]] = []
+        self._navigation_records: dict[str, dict[str, Any]] = {}
 
     def get_status(self) -> dict[str, Any]:
         self.status_calls += 1
@@ -82,6 +92,20 @@ class FakeRobotGateway:
                     }
                 )
         for record in self._follow_records.values():
+            if record.get("status") not in {
+                "SUCCEEDED",
+                "FAILED",
+                "TIMED_OUT",
+                "CANCELLED",
+            }:
+                record.update(
+                    {
+                        "status": "CANCELLED",
+                        "error_code": "CANCELLED",
+                        "error": "收到停止请求",
+                    }
+                )
+        for record in self._navigation_records.values():
             if record.get("status") not in {
                 "SUCCEEDED",
                 "FAILED",
@@ -149,6 +173,43 @@ class FakeRobotGateway:
         if self._detections_script:
             return dict(self._detections_script.pop(0))
         return {"status": "EMPTY", "detections": []}
+
+    def get_navigation_status(self) -> dict[str, Any]:
+        return dict(self.navigation_status)
+
+    def preflight_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("map_id") != self.navigation_status.get("map_id"):
+            raise RobotGatewayError("MAP_CHANGED", "目标位置不属于当前地图")
+        return {**payload, "status": "READY", "path_pose_count": 10}
+
+    def submit_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operation_id = str(payload["operation_id"])
+        previous = self._navigation_records.get(operation_id)
+        if previous is not None:
+            return previous
+        self.navigation_submitted.append(payload)
+        record = {**payload, "kind": "navigation", "status": "RUNNING"}
+        if self._submit_results:
+            record.update(dict(self._submit_results.pop(0)))
+        self._navigation_records[operation_id] = record
+        return record
+
+    def get_navigation(self, operation_id: str) -> dict[str, Any]:
+        try:
+            record = self._navigation_records[operation_id]
+        except KeyError as error:
+            raise RobotGatewayError("NOT_FOUND", "未知 operation_id") from error
+        script = self._poll_scripts.get(operation_id)
+        if script:
+            record.update(dict(script.pop(0)))
+        elif record["status"] == "RUNNING":
+            record["status"] = "SUCCEEDED"
+        return record
+
+    def cancel_navigation(self, operation_id: str) -> dict[str, Any]:
+        record = self.get_navigation(operation_id)
+        record.update({"status": "CANCELLED", "error_code": "CANCELLED"})
+        return record
 
 
 class FailingRobotGateway(FakeRobotGateway):

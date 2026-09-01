@@ -10,6 +10,7 @@ from typing import Any, Literal
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.store.base import BaseStore
 from langgraph.types import Command
 from pydantic import ValidationError
 
@@ -114,7 +115,7 @@ class SupervisorNodes:
             [SystemMessage(content=system_content), *state.get("messages", [])]
         )
         if not response.tool_calls:
-            destination = "finalize_memory"
+            destination: SupervisorDestination = "finalize_memory"
         elif len(response.tool_calls) == 1 and str(
             response.tool_calls[0].get("name")
         ) in {
@@ -449,6 +450,7 @@ def build_car_agent_graph(
     gateway_factory: Callable[[], RobotGateway] = get_robot_gateway,
     name: str = "intelligent_car_supervisor",
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
 ):
     """构建 Supervisor 主图并嵌入固定相对移动与跟随子图。"""
     nodes = SupervisorNodes(model_factory=model_factory)
@@ -465,10 +467,12 @@ def build_car_agent_graph(
     location_workflow = build_location_workflow(
         gateway_factory=gateway_factory,
         checkpointer=checkpointer,
+        store=store,
     )
     navigation_workflow = build_navigation_workflow(
         gateway_factory=gateway_factory,
         checkpointer=checkpointer,
+        store=store,
     )
     builder = StateGraph(
         CarAgentState,
@@ -476,8 +480,8 @@ def build_car_agent_graph(
         output_schema=CarAgentOutput,
     )
     builder.add_node("supervisor", nodes.supervisor)
-    builder.add_node("load_memory", memory_nodes.load)
-    builder.add_node("finalize_memory", memory_nodes.finalize)
+    builder.add_node("load_memory", memory_nodes.load)  # type: ignore[arg-type]
+    builder.add_node("finalize_memory", memory_nodes.finalize)  # type: ignore[arg-type]
     builder.add_node("direct_tools", direct_tools)
     builder.add_node("prepare_handoff", nodes.prepare_handoff)
     builder.add_node("relative_motion_workflow", motion_workflow)
@@ -494,7 +498,7 @@ def build_car_agent_graph(
     builder.add_edge("map_navigation_workflow", "collect_handoff_result")
     builder.add_edge("collect_handoff_result", "supervisor")
     builder.add_edge("finalize_memory", END)
-    return builder.compile(name=name, checkpointer=checkpointer)
+    return builder.compile(name=name, checkpointer=checkpointer, store=store)
 
 
 def _tool_message(call: Mapping[str, Any], result: Any) -> ToolMessage:

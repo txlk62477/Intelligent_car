@@ -102,7 +102,7 @@ class LocationStore:
         """返回 Studio 中可见的位置 namespace。"""
         return self._namespace
 
-    async def list(self) -> list[MapLocation]:
+    async def list_all(self) -> list[MapLocation]:
         """列出当前地图中的全部合法位置。"""
         items = await self._store.asearch(self._namespace, limit=200)
         locations: list[MapLocation] = []
@@ -118,7 +118,7 @@ class LocationStore:
     async def resolve(self, query: str, *, limit: int = 5) -> list[MapLocation]:
         """按标准名称、别名和语义相似依次解析当前地图位置。"""
         normalized = normalize_location_name(query)
-        locations = await self.list()
+        locations = await self.list_all()
         exact = [
             location
             for location in locations
@@ -183,7 +183,7 @@ class LocationStore:
             normalize_location_name(label),
             *(normalize_location_name(alias) for alias in aliases),
         }
-        for location in await self.list():
+        for location in await self.list_all():
             if location_key(location.label) == key:
                 continue
             names = {
@@ -215,20 +215,27 @@ class LocationStore:
             created_at=now if existing is None else existing.created_at,
             updated_at=now,
         )
-        await self._store.aput(
-            self._namespace,
-            key,
-            location.model_dump(mode="json"),
-            index=["label", "aliases"],
-        )
+        await self._put(key, location)
         return location
 
     async def delete(self, label: str) -> bool:
         """删除当前地图的精确位置。"""
-        existing = await self.get(label)
+        normalized = normalize_location_name(label)
+        existing = next(
+            (
+                location
+                for location in await self.list_all()
+                if normalized
+                in {
+                    normalize_location_name(location.label),
+                    *(normalize_location_name(alias) for alias in location.aliases),
+                }
+            ),
+            None,
+        )
         if existing is None:
             return False
-        await self._store.adelete(self._namespace, location_key(label))
+        await self._store.adelete(self._namespace, location_key(existing.label))
         return True
 
     async def record_result(self, location: MapLocation, status: str) -> MapLocation:
@@ -245,13 +252,21 @@ class LocationStore:
                 "updated_at": utc_now(),
             }
         )
-        await self._store.aput(
-            self._namespace,
-            location_key(location.label),
-            updated.model_dump(mode="json"),
-            index=["label", "aliases"],
-        )
+        await self._put(location_key(location.label), updated)
         return updated
+
+    async def _put(self, key: str, location: MapLocation) -> None:
+        """优先建立语义索引；embedding 不可用时仍保存精确可查的位置。"""
+        value = location.model_dump(mode="json")
+        try:
+            await self._store.aput(
+                self._namespace,
+                key,
+                value,
+                index=["label", "aliases"],
+            )
+        except Exception:
+            await self._store.aput(self._namespace, key, value, index=False)
 
 
 def normalize_location_name(value: str) -> str:

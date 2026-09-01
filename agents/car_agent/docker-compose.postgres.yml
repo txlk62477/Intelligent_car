@@ -1,0 +1,22 @@
+services:
+  car-agent-postgres:
+    image: pgvector/pgvector:pg17
+    container_name: car-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${CAR_AGENT_POSTGRES_DB:-car_agent}
+      POSTGRES_USER: ${CAR_AGENT_POSTGRES_USER:-car_agent}
+      POSTGRES_PASSWORD: ${CAR_AGENT_POSTGRES_PASSWORD:-car_agent_local_only}
+    ports:
+      - "127.0.0.1:${CAR_AGENT_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - car_agent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  car_agent_postgres_data:
+    name: car_agent_postgres_data

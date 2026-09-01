@@ -10,16 +10,26 @@ from threading import Lock
 from typing import Any
 
 import rclpy
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from leap_interfaces.action import ExecuteMotion, FollowTarget
 from leap_interfaces.msg import Detections
 from leap_interfaces.srv import SetPerception
-from nav_msgs.msg import Odometry
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 from xuegecar_agent_bridge.camera_snapshot import CameraSnapshotStore
@@ -31,6 +41,13 @@ from xuegecar_agent_bridge.detections import (
 )
 from xuegecar_agent_bridge.errors import GatewayRejected
 from xuegecar_agent_bridge.http_server import GatewayHttpServer
+from xuegecar_agent_bridge.navigation import (
+    goal_has_clearance,
+    occupancy_grid_fingerprint,
+    pose_quality,
+    quaternion_to_yaw,
+    yaw_to_quaternion,
+)
 
 TERMINAL_STATUSES = {
     "SUCCEEDED",
@@ -79,6 +96,18 @@ class AgentGatewayNode(Node):
         self.declare_parameter("detections_max_items", 8)
         self.declare_parameter("detections_probe_timeout", 15.0)
         self.declare_parameter("detections_probe_runtime", 30.0)
+        self.declare_parameter("map_topic", "/map")
+        self.declare_parameter("map_name", "")
+        self.declare_parameter("amcl_pose_topic", "/amcl_pose")
+        self.declare_parameter("amcl_pose_max_age", 2.0)
+        self.declare_parameter("amcl_max_position_std", 0.25)
+        self.declare_parameter("amcl_max_yaw_std", math.radians(20.0))
+        self.declare_parameter("navigation_goal_clearance", 0.20)
+        self.declare_parameter("navigation_max_timeout", 900.0)
+        self.declare_parameter("emergency_lock_topic", "/cmd_vel_emergency_lock")
+        self.declare_parameter("agent_cmd_vel_topic", "/cmd_vel_agent")
+        self.declare_parameter("nav_cmd_vel_topic", "/cmd_vel_nav")
+        self.declare_parameter("command_conflict_window", 0.30)
 
         self._callbacks = ReentrantCallbackGroup()
         self._lock = Lock()
@@ -88,6 +117,11 @@ class AgentGatewayNode(Node):
         self._goal_handles: dict[str, Any] = {}
         self._last_odom: dict[str, Any] | None = None
         self._last_odom_at: float | None = None
+        self._map: dict[str, Any] | None = None
+        self._amcl_pose: dict[str, Any] | None = None
+        self._amcl_pose_at: float | None = None
+        self._emergency_locked = False
+        self._source_active_at: dict[str, float | None] = {"agent": None, "nav": None}
         self._history_size = int(self.get_parameter("history_size").value)
         self._action_timeout = float(self.get_parameter("action_timeout").value)
         self._follow_default_timeout = float(
@@ -113,15 +147,60 @@ class AgentGatewayNode(Node):
             "/motion/follow_target",
             callback_group=self._callbacks,
         )
+        self._compute_path_client = ActionClient(
+            self,
+            ComputePathToPose,
+            "/compute_path_to_pose",
+            callback_group=self._callbacks,
+        )
+        self._navigation_client = ActionClient(
+            self,
+            NavigateToPose,
+            "/navigate_to_pose",
+            callback_group=self._callbacks,
+        )
         self._emergency_client = self.create_client(
             Trigger,
             "/motion/emergency_stop",
             callback_group=self._callbacks,
         )
+        self._emergency_lock_publisher = self.create_publisher(
+            Bool, str(self.get_parameter("emergency_lock_topic").value), 10
+        )
+        self.create_subscription(
+            Twist,
+            str(self.get_parameter("agent_cmd_vel_topic").value),
+            lambda message: self._on_velocity_source("agent", message),
+            10,
+            callback_group=self._callbacks,
+        )
+        self.create_subscription(
+            Twist,
+            str(self.get_parameter("nav_cmd_vel_topic").value),
+            lambda message: self._on_velocity_source("nav", message),
+            10,
+            callback_group=self._callbacks,
+        )
+        self.create_timer(0.1, self._publish_emergency_lock)
+        self.create_timer(0.2, self._enforce_navigation_timeout)
         self.create_subscription(
             Odometry,
             str(self.get_parameter("odom_topic").value),
             self._on_odom,
+            qos_profile_sensor_data,
+            callback_group=self._callbacks,
+        )
+        self.create_subscription(
+            OccupancyGrid,
+            str(self.get_parameter("map_topic").value),
+            self._on_map,
+            _map_qos(),
+            callback_group=self._callbacks,
+        )
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            str(self.get_parameter("amcl_pose_topic").value),
+            self._on_amcl_pose,
             qos_profile_sensor_data,
             callback_group=self._callbacks,
         )
@@ -177,6 +256,13 @@ class AgentGatewayNode(Node):
             stop=self._stop,
             snapshot=self._snapshot_store.capture,
             detections=self._read_detections,
+            navigation_status=self._read_navigation_status,
+            navigation_operation=lambda operation_id: self._read_operation(
+                operation_id, "navigation"
+            ),
+            preflight_navigation=self._preflight_navigation,
+            submit_navigation=self._submit_navigation,
+            cancel_navigation=self._cancel_navigation,
         )
         self._http.start()
         self.get_logger().info(f"Agent Gateway listening on http://{host}:{port}")
@@ -195,6 +281,7 @@ class AgentGatewayNode(Node):
             "progress": 0.0,
             "error_code": None,
             "error": None,
+            "_deadline": time.monotonic() + normalized["timeout_seconds"],
         }
         return self._submit_action(
             record,
@@ -230,6 +317,175 @@ class AgentGatewayNode(Node):
             self._follow_feedback,
             self._follow_result,
         )
+
+    def _preflight_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """校验地图身份、静态净空，并让 Nav2 计算一条无运动路径。"""
+        normalized = self._validate_navigation(payload, require_operation_id=False)
+        status = self._read_navigation_status()
+        if status["status"] != "READY":
+            raise GatewayRejected("LOCALIZATION_NOT_READY", status["error"])
+        if normalized["map_id"] != status["map_id"]:
+            raise GatewayRejected("MAP_CHANGED", "目标位置不属于当前地图")
+        with self._lock:
+            grid = None if self._map is None else dict(self._map)
+        assert grid is not None
+        clear, reason = goal_has_clearance(
+            goal_x=normalized["pose"]["x"],
+            goal_y=normalized["pose"]["y"],
+            width=grid["width"],
+            height=grid["height"],
+            resolution=grid["resolution"],
+            origin_x=grid["origin_x"],
+            origin_y=grid["origin_y"],
+            origin_yaw=grid["origin_yaw"],
+            data=grid["data"],
+            clearance=float(self.get_parameter("navigation_goal_clearance").value),
+        )
+        if not clear:
+            raise GatewayRejected("GOAL_BLOCKED", reason)
+        if not self._compute_path_client.wait_for_server(
+            timeout_sec=self._action_timeout
+        ):
+            raise GatewayRejected("UNAVAILABLE", "ComputePathToPose 不可用")
+        goal = ComputePathToPose.Goal()
+        goal.goal = self._pose_stamped(normalized["pose"])
+        goal.use_start = False
+        future = self._compute_path_client.send_goal_async(goal)
+        if not _wait_future(future, self._action_timeout):
+            raise GatewayRejected("GATEWAY_TIMEOUT", "路径预检提交超时")
+        goal_handle = future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            raise GatewayRejected("NO_PATH", "Nav2 拒绝路径预检")
+        result_future = goal_handle.get_result_async()
+        if not _wait_future(result_future, max(5.0, self._action_timeout)):
+            goal_handle.cancel_goal_async()
+            raise GatewayRejected("GATEWAY_TIMEOUT", "路径预检响应超时")
+        wrapped = result_future.result()
+        if wrapped is None or wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise GatewayRejected("NO_PATH", "Nav2 未找到可行路径")
+        poses = wrapped.result.path.poses
+        if not poses:
+            raise GatewayRejected("NO_PATH", "Nav2 返回空路径")
+        return {
+            "status": "READY",
+            "map_id": normalized["map_id"],
+            "path_pose_count": len(poses),
+            "planning_time_seconds": _duration_seconds(
+                wrapped.result.planning_time
+            ),
+        }
+
+    def _submit_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """幂等提交 NavigateToPose，并占用 Gateway 全局任务槽。"""
+        normalized = self._validate_navigation(payload, require_operation_id=True)
+        status = self._read_navigation_status()
+        if status["status"] != "READY":
+            raise GatewayRejected("LOCALIZATION_NOT_READY", status["error"])
+        if normalized["map_id"] != status["map_id"]:
+            raise GatewayRejected("MAP_CHANGED", "确认后活动地图发生变化")
+        operation_id = normalized["operation_id"]
+        record = {
+            **normalized,
+            "kind": "navigation",
+            "status": "PENDING",
+            "distance_remaining": None,
+            "navigation_time_seconds": 0.0,
+            "error_code": None,
+            "error": None,
+        }
+        request_identity = {
+            key: record[key]
+            for key in ("operation_id", "kind", "map_id", "pose", "timeout_seconds")
+        }
+        with self._lock:
+            previous = self._records.get(operation_id)
+            if previous is not None:
+                if previous.get("_request") != request_identity:
+                    raise GatewayRejected("ID_CONFLICT", "operation_id 已用于不同任务")
+                return _public(previous)
+            if self._active_operation_id is not None:
+                raise GatewayRejected("BUSY", "已有任务正在执行")
+            record["_request"] = request_identity
+            self._records[operation_id] = record
+            self._active_operation_id = operation_id
+            self._active_kind = "navigation"
+            self._emergency_locked = False
+        if not self._navigation_client.wait_for_server(timeout_sec=self._action_timeout):
+            self._reject_pending(operation_id)
+            raise GatewayRejected("UNAVAILABLE", "NavigateToPose 不可用")
+        goal = NavigateToPose.Goal()
+        goal.pose = self._pose_stamped(normalized["pose"])
+        future = self._navigation_client.send_goal_async(
+            goal,
+            feedback_callback=lambda message: self._navigation_feedback(
+                operation_id, message
+            ),
+        )
+        if not _wait_future(future, self._action_timeout):
+            self._reject_pending(operation_id)
+            raise GatewayRejected("GATEWAY_TIMEOUT", "提交 NavigateToPose 超时")
+        goal_handle = future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            self._reject_pending(operation_id)
+            raise GatewayRejected("BUSY", "Nav2 拒绝导航任务")
+        with self._lock:
+            self._goal_handles[operation_id] = goal_handle
+            self._records[operation_id]["status"] = "RUNNING"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda completed: self._navigation_result(operation_id, completed)
+        )
+        with self._lock:
+            return _public(self._records[operation_id])
+
+    def _navigation_feedback(self, operation_id: str, message: Any) -> None:
+        feedback = message.feedback
+        with self._lock:
+            record = self._records.get(operation_id)
+            if record is not None:
+                record["distance_remaining"] = round(
+                    float(feedback.distance_remaining), 3
+                )
+                record["navigation_time_seconds"] = round(
+                    _duration_seconds(feedback.navigation_time), 3
+                )
+
+    def _navigation_result(self, operation_id: str, future: Any) -> None:
+        try:
+            wrapped = future.result()
+            status = {
+                GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+                GoalStatus.STATUS_CANCELED: "CANCELLED",
+            }.get(wrapped.status, "FAILED")
+            with self._lock:
+                timed_out = self._records.get(operation_id, {}).get("status") == (
+                    "TIMED_OUT"
+                )
+            values = (
+                {
+                    "status": "TIMED_OUT",
+                    "error_code": "TASK_TIMEOUT",
+                    "error": "导航超过 Gateway 允许时间，已取消并锁止速度输出",
+                }
+                if timed_out
+                else {
+                    "status": status,
+                    "error_code": None if status == "SUCCEEDED" else "NAV2_FAILED",
+                    "error": None
+                    if status == "SUCCEEDED"
+                    else "Nav2 导航未成功完成",
+                }
+            )
+        except Exception as error:  # noqa: BLE001
+            values = {
+                "status": "FAILED",
+                "error_code": "INVALID_ACTION_RESULT",
+                "error": str(error),
+            }
+        self._finish_record(operation_id, values)
+
+    def _cancel_navigation(self, operation_id: str) -> dict[str, Any]:
+        return self._cancel_operation(operation_id, "navigation")
 
     def _submit_action(
         self,
@@ -269,6 +525,7 @@ class AgentGatewayNode(Node):
             self._records[operation_id] = record
             self._active_operation_id = operation_id
             self._active_kind = kind
+            self._emergency_locked = False
 
         if not client.wait_for_server(timeout_sec=self._action_timeout):
             self._reject_pending(operation_id)
@@ -397,9 +654,13 @@ class AgentGatewayNode(Node):
             return _public(record)
 
     def _cancel_follow(self, operation_id: str) -> dict[str, Any]:
+        return self._cancel_operation(operation_id, "follow")
+
+    def _cancel_operation(self, operation_id: str, kind: str) -> dict[str, Any]:
+        """取消指定种类的活动 Action。"""
         with self._lock:
             record = self._records.get(operation_id)
-            if record is None or record.get("kind") != "follow":
+            if record is None or record.get("kind") != kind:
                 raise GatewayRejected("NOT_FOUND", "未知 operation_id")
             if record.get("status") in TERMINAL_STATUSES:
                 return _public(record)
@@ -414,6 +675,7 @@ class AgentGatewayNode(Node):
 
     def _stop(self) -> dict[str, Any]:
         with self._lock:
+            self._emergency_locked = True
             active = self._active_operation_id
             goal_handle = None if active is None else self._goal_handles.get(active)
         if goal_handle is not None:
@@ -432,6 +694,61 @@ class AgentGatewayNode(Node):
                     break
             time.sleep(0.02)
         return self._read_status()
+
+    def _publish_emergency_lock(self) -> None:
+        message = Bool()
+        with self._lock:
+            message.data = self._emergency_locked
+        self._emergency_lock_publisher.publish(message)
+
+    def _enforce_navigation_timeout(self) -> None:
+        """即使 Agent 断连，也由 Gateway 取消超时的 Nav2 goal。"""
+        now = time.monotonic()
+        with self._lock:
+            operation_id = self._active_operation_id
+            record = self._records.get(operation_id or "")
+            if (
+                record is None
+                or record.get("kind") != "navigation"
+                or record.get("status") in TERMINAL_STATUSES
+                or now < float(record.get("_deadline") or math.inf)
+            ):
+                return
+            record.update(
+                {
+                    "status": "TIMED_OUT",
+                    "error_code": "TASK_TIMEOUT",
+                    "error": "导航超过 Gateway 允许时间，已取消并锁止速度输出",
+                }
+            )
+            self._emergency_locked = True
+            goal_handle = self._goal_handles.get(operation_id or "")
+        if goal_handle is not None:
+            goal_handle.cancel_goal_async()
+
+    def _on_velocity_source(self, source: str, message: Twist) -> None:
+        """检测两个自主速度源同时非零，立即锁住 mux。"""
+        active = abs(float(message.linear.x)) > 1e-4 or abs(
+            float(message.angular.z)
+        ) > 1e-4
+        now = time.monotonic()
+        window = float(self.get_parameter("command_conflict_window").value)
+        with self._lock:
+            self._source_active_at[source] = now if active else None
+            agent_at = self._source_active_at["agent"]
+            nav_at = self._source_active_at["nav"]
+            conflict = (
+                agent_at is not None
+                and nav_at is not None
+                and now - agent_at <= window
+                and now - nav_at <= window
+            )
+            if conflict:
+                self._emergency_locked = True
+        if conflict:
+            self.get_logger().error(
+                "同时检测到 agent 与 Nav2 非零速度指令，已触发最高优先级锁"
+            )
 
     def _read_status(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -476,6 +793,130 @@ class AgentGatewayNode(Node):
                 },
             }
             self._last_odom_at = time.monotonic()
+
+    def _on_map(self, message: OccupancyGrid) -> None:
+        """缓存静态地图并计算与坐标语义绑定的内容哈希。"""
+        origin = message.info.origin
+        origin_yaw = quaternion_to_yaw(
+            float(origin.orientation.x),
+            float(origin.orientation.y),
+            float(origin.orientation.z),
+            float(origin.orientation.w),
+        )
+        values = {
+            "width": int(message.info.width),
+            "height": int(message.info.height),
+            "resolution": float(message.info.resolution),
+            "origin_x": float(origin.position.x),
+            "origin_y": float(origin.position.y),
+            "origin_yaw": origin_yaw,
+            "data": tuple(int(value) for value in message.data),
+        }
+        values["map_id"] = occupancy_grid_fingerprint(**values)
+        with self._lock:
+            self._map = values
+
+    def _on_amcl_pose(self, message: PoseWithCovarianceStamped) -> None:
+        """缓存 AMCL map-frame 位姿、协方差和本机接收时间。"""
+        pose = message.pose.pose
+        yaw = quaternion_to_yaw(
+            float(pose.orientation.x),
+            float(pose.orientation.y),
+            float(pose.orientation.z),
+            float(pose.orientation.w),
+        )
+        with self._lock:
+            self._amcl_pose = {
+                "x": float(pose.position.x),
+                "y": float(pose.position.y),
+                "yaw": yaw,
+                "covariance": tuple(float(value) for value in message.pose.covariance),
+            }
+            self._amcl_pose_at = time.monotonic()
+
+    def _read_navigation_status(self) -> dict[str, Any]:
+        """返回位置教学与导航共同依赖的当前地图/定位状态。"""
+        now = time.monotonic()
+        with self._lock:
+            grid = None if self._map is None else dict(self._map)
+            pose = None if self._amcl_pose is None else dict(self._amcl_pose)
+            pose_age = (
+                None
+                if self._amcl_pose_at is None
+                else max(0.0, now - self._amcl_pose_at)
+            )
+        error = ""
+        status = "READY"
+        position_std = yaw_std = None
+        if grid is None:
+            status, error = "NOT_READY", "尚未收到 OccupancyGrid 地图"
+        elif pose is None or pose_age is None:
+            status, error = "NOT_READY", "尚未收到 AMCL map-frame 位姿"
+        elif pose_age > float(self.get_parameter("amcl_pose_max_age").value):
+            status, error = "NOT_READY", "AMCL 位姿已过期"
+        else:
+            quality_ok, position_std, yaw_std = pose_quality(
+                pose.pop("covariance"),
+                max_position_std=float(
+                    self.get_parameter("amcl_max_position_std").value
+                ),
+                max_yaw_std=float(self.get_parameter("amcl_max_yaw_std").value),
+            )
+            if not quality_ok:
+                status, error = "NOT_READY", "AMCL 定位协方差过大"
+        return {
+            "status": status,
+            "error": error or None,
+            "map_id": None if grid is None else grid["map_id"],
+            "map_name": str(self.get_parameter("map_name").value),
+            "frame_id": "map",
+            "pose": pose,
+            "pose_age_seconds": pose_age,
+            "position_std": position_std,
+            "yaw_std": yaw_std,
+            "nav2_available": self._navigation_client.server_is_ready(),
+        }
+
+    def _validate_navigation(
+        self, payload: dict[str, Any], *, require_operation_id: bool
+    ) -> dict[str, Any]:
+        """验证 Agent 传来的 map-scoped 二维目标。"""
+        try:
+            operation_id = str(payload.get("operation_id") or "").strip()
+            map_id = str(payload["map_id"]).strip()
+            raw_pose = payload["pose"]
+            pose = {
+                "x": float(raw_pose["x"]),
+                "y": float(raw_pose["y"]),
+                "yaw": float(raw_pose["yaw"]),
+            }
+            timeout = float(payload.get("timeout_seconds", 300.0))
+        except (KeyError, TypeError, ValueError) as error:
+            raise GatewayRejected("INVALID_REQUEST", "导航字段无效") from error
+        if require_operation_id and not operation_id:
+            raise GatewayRejected("INVALID_REQUEST", "operation_id 不能为空")
+        if not map_id or not all(math.isfinite(value) for value in pose.values()):
+            raise GatewayRejected("INVALID_REQUEST", "map_id 或目标位姿无效")
+        max_timeout = float(self.get_parameter("navigation_max_timeout").value)
+        if not 0.0 < timeout <= max_timeout:
+            raise GatewayRejected("OUT_OF_RANGE", "导航超时参数超出允许范围")
+        return {
+            "operation_id": operation_id,
+            "map_id": map_id,
+            "pose": pose,
+            "timeout_seconds": timeout,
+        }
+
+    def _pose_stamped(self, pose: dict[str, float]) -> PoseStamped:
+        target = PoseStamped()
+        target.header.frame_id = "map"
+        target.header.stamp = self.get_clock().now().to_msg()
+        target.pose.position.x = pose["x"]
+        target.pose.position.y = pose["y"]
+        target.pose.orientation.z, target.pose.orientation.w = yaw_to_quaternion(
+            pose["yaw"]
+        )
+        return target
 
     def _on_camera_frame(self, message: CompressedImage) -> None:
         """缓存相机最新压缩帧，供 /v1/camera/snapshot 落盘。"""
@@ -620,6 +1061,20 @@ def _video_qos() -> QoSProfile:
         depth=2,
         reliability=ReliabilityPolicy.BEST_EFFORT,
     )
+
+
+def _map_qos() -> QoSProfile:
+    """匹配 map_server 的 reliable + transient-local latched 地图。"""
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+def _duration_seconds(duration: Any) -> float:
+    return float(duration.sec) + float(duration.nanosec) / 1_000_000_000.0
 
 
 def _wait_future(future: Any, timeout: float) -> bool:

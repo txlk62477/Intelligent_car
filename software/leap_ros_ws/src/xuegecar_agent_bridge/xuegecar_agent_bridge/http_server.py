@@ -17,6 +17,8 @@ MAX_BODY_BYTES = 64 * 1024
 OPERATION_PATH = re.compile(r"^/v1/motions/([^/]+)$")
 FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)$")
 CANCEL_FOLLOW_PATH = re.compile(r"^/v1/follow-tasks/([^/]+)/cancel$")
+NAVIGATION_PATH = re.compile(r"^/v1/navigation-tasks/([^/]+)$")
+CANCEL_NAVIGATION_PATH = re.compile(r"^/v1/navigation-tasks/([^/]+)/cancel$")
 
 
 def _rejection_status(code: str) -> int:
@@ -49,6 +51,11 @@ class GatewayHttpServer:
         stop: Callable[[], dict[str, Any]],
         snapshot: Callable[[], dict[str, Any]],
         detections: Callable[[], dict[str, Any]],
+        navigation_status: Callable[[], dict[str, Any]] | None = None,
+        navigation_operation: Callable[[str], dict[str, Any] | None] | None = None,
+        preflight_navigation: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        submit_navigation: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        cancel_navigation: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         # Handler 通过闭包持有这些业务回调。HTTP 层只处理协议，不依赖 ROS2。
         handler = _handler_factory(
@@ -61,6 +68,11 @@ class GatewayHttpServer:
             stop=stop,
             snapshot=snapshot,
             detections=detections,
+            navigation_status=navigation_status or _unavailable,
+            navigation_operation=navigation_operation or (lambda _operation_id: None),
+            preflight_navigation=preflight_navigation or _unavailable_payload,
+            submit_navigation=submit_navigation or _unavailable_payload,
+            cancel_navigation=cancel_navigation or _unavailable_id,
         )
         # 每个 HTTP 请求可由独立线程处理；真正的运动状态由 node.py 负责同步。
         self._server = ThreadingHTTPServer((host, port), handler)
@@ -102,6 +114,11 @@ def _handler_factory(
     stop: Callable[[], dict[str, Any]],
     snapshot: Callable[[], dict[str, Any]],
     detections: Callable[[], dict[str, Any]],
+    navigation_status: Callable[[], dict[str, Any]],
+    navigation_operation: Callable[[str], dict[str, Any] | None],
+    preflight_navigation: Callable[[dict[str, Any]], dict[str, Any]],
+    submit_navigation: Callable[[dict[str, Any]], dict[str, Any]],
+    cancel_navigation: Callable[[str], dict[str, Any]],
 ) -> type[BaseHTTPRequestHandler]:
     # 工厂把节点提供的回调封装进 Handler 类，避免使用全局节点对象。
     class Handler(BaseHTTPRequestHandler):
@@ -111,6 +128,12 @@ def _handler_factory(
             # 查询接口只读取节点维护的快照，不直接访问 ROS2 控制器。
             if self.path == "/v1/robot/status":
                 self._write_json(200, status())
+                return
+            if self.path == "/v1/navigation/status":
+                try:
+                    self._write_json(200, navigation_status())
+                except GatewayRejected as error:
+                    self._write_rejection(error)
                 return
             match = OPERATION_PATH.fullmatch(self.path)
             if match:
@@ -129,6 +152,16 @@ def _handler_factory(
             if match:
                 operation_id = unquote(match.group(1))
                 result = follow_operation(operation_id)
+                if result is None:
+                    self._write_json(
+                        404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"}
+                    )
+                else:
+                    self._write_json(200, result)
+                return
+            match = NAVIGATION_PATH.fullmatch(self.path)
+            if match:
+                result = navigation_operation(unquote(match.group(1)))
                 if result is None:
                     self._write_json(
                         404, {"error_code": "NOT_FOUND", "error": "未知 operation_id"}
@@ -161,6 +194,16 @@ def _handler_factory(
                     return
                 if self.path == "/v1/follow-tasks":
                     self._write_json(202, submit_follow(self._read_json()))
+                    return
+                if self.path == "/v1/navigation/preflight":
+                    self._write_json(200, preflight_navigation(self._read_json()))
+                    return
+                if self.path == "/v1/navigation-tasks":
+                    self._write_json(202, submit_navigation(self._read_json()))
+                    return
+                match = CANCEL_NAVIGATION_PATH.fullmatch(self.path)
+                if match:
+                    self._write_json(200, cancel_navigation(unquote(match.group(1))))
                     return
                 match = CANCEL_FOLLOW_PATH.fullmatch(self.path)
                 if match:
@@ -224,3 +267,15 @@ def _handler_factory(
             return
 
     return Handler
+
+
+def _unavailable() -> dict[str, Any]:
+    raise GatewayRejected("UNAVAILABLE", "Nav2 Gateway 尚未配置")
+
+
+def _unavailable_payload(_payload: dict[str, Any]) -> dict[str, Any]:
+    return _unavailable()
+
+
+def _unavailable_id(_operation_id: str) -> dict[str, Any]:
+    return _unavailable()

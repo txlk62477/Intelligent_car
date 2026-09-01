@@ -41,6 +41,11 @@ def test_http_routes_status_submit_operation_and_stop():
             "format": "jpeg",
         },
         detections=lambda: {"status": "DETECTED", "detections": []},
+        navigation_status=lambda: {"status": "READY", "map_id": "sha256:test"},
+        navigation_operation=lambda operation_id: operations.get(operation_id),
+        preflight_navigation=lambda payload: {**payload, "status": "READY"},
+        submit_navigation=submit,
+        cancel_navigation=lambda operation_id: operations[operation_id],
     )
     server.start()
     base_url = f"http://{server.address[0]}:{server.address[1]}"
@@ -83,6 +88,25 @@ def test_http_routes_status_submit_operation_and_stop():
         assert request_json(base_url, "/v1/stop", payload={})[1] == {
             "gateway_status": "IDLE"
         }
+        assert request_json(base_url, "/v1/navigation/status")[1]["status"] == (
+            "READY"
+        )
+        assert request_json(
+            base_url,
+            "/v1/navigation/preflight",
+            payload={"map_id": "sha256:test", "pose": {"x": 1, "y": 2, "yaw": 0}},
+        )[1]["status"] == "READY"
+        assert request_json(
+            base_url,
+            "/v1/navigation-tasks",
+            payload={"operation_id": "nav-1"},
+        )[0] == 202
+        assert request_json(base_url, "/v1/navigation-tasks/nav-1")[1][
+            "operation_id"
+        ] == "nav-1"
+        assert request_json(
+            base_url, "/v1/navigation-tasks/nav-1/cancel", payload={}
+        )[0] == 200
     finally:
         server.close()
 

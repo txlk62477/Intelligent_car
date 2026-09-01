@@ -6,13 +6,14 @@ import asyncio
 import math
 import os
 from collections.abc import Callable, Mapping
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 
 from agent.common.robot_gateway import (
@@ -290,6 +291,7 @@ def build_navigation_workflow(
     gateway_factory: Callable[[], RobotGateway] = get_robot_gateway,
     name: str = "map_navigation_workflow",
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
 ):
     """构建地点解析和 Nav2 导航子图。"""
     nodes = NavigationWorkflowNodes(gateway_factory)
@@ -306,7 +308,7 @@ def build_navigation_workflow(
         ("execute", nodes.execute),
         ("finish", nodes.finish),
     ):
-        builder.add_node(name_, node)
+        builder.add_node(name_, node)  # type: ignore[arg-type]
     builder.add_edge(START, "resolve")
     builder.add_conditional_edges(
         "resolve",
@@ -330,15 +332,19 @@ def build_navigation_workflow(
     )
     builder.add_edge("execute", "finish")
     builder.add_edge("finish", END)
-    return builder.compile(name=name, checkpointer=checkpointer)
+    return builder.compile(name=name, checkpointer=checkpointer, store=store)
 
 
 def _route_status(
     state: CarAgentState,
 ) -> Literal["select", "preflight", "confirm", "execute", "finish"]:
-    return {
+    destination = {
         "selecting": "select",
         "preflighting": "preflight",
         "awaiting_confirmation": "confirm",
         "executing": "execute",
     }.get(str(state.get("navigation_status")), "finish")
+    return cast(
+        Literal["select", "preflight", "confirm", "execute", "finish"],
+        destination,
+    )

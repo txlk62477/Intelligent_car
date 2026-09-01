@@ -16,6 +16,7 @@ def generate_launch_description():
 
     map_yaml = LaunchConfiguration('map')
     params_file = LaunchConfiguration('params_file')
+    mux_params_file = str(package_share / 'config' / 'twist_mux.yaml')
     use_sim_time = ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool
     )
@@ -96,7 +97,7 @@ def generate_launch_description():
                 name='controller_server',
                 output='screen',
                 parameters=common_parameters,
-                remappings=tf_remappings + [('cmd_vel', 'cmd_vel_nav')],
+                remappings=tf_remappings + [('cmd_vel', 'cmd_vel_nav_raw')],
             ),
             Node(
                 package='nav2_smoother',
@@ -120,7 +121,7 @@ def generate_launch_description():
                 name='behavior_server',
                 output='screen',
                 parameters=common_parameters,
-                remappings=tf_remappings + [('cmd_vel', 'cmd_vel_nav')],
+                remappings=tf_remappings + [('cmd_vel', 'cmd_vel_nav_raw')],
             ),
             Node(
                 package='nav2_bt_navigator',
@@ -146,9 +147,17 @@ def generate_launch_description():
                 parameters=common_parameters,
                 remappings=tf_remappings
                 + [
-                    ('cmd_vel', 'cmd_vel_nav'),
-                    ('cmd_vel_smoothed', 'cmd_vel_safe'),
+                    ('cmd_vel', 'cmd_vel_nav_raw'),
+                    ('cmd_vel_smoothed', 'cmd_vel_nav'),
                 ],
+            ),
+            Node(
+                package='twist_mux',
+                executable='twist_mux',
+                name='twist_mux',
+                output='screen',
+                parameters=[mux_params_file, {'use_sim_time': use_sim_time}],
+                remappings=[('/cmd_vel_out', '/cmd_vel_selected')],
             ),
             Node(
                 package='nav2_collision_monitor',
@@ -158,7 +167,7 @@ def generate_launch_description():
                 parameters=common_parameters,
                 remappings=tf_remappings
                 + [
-                    ('cmd_vel_smoothed', 'cmd_vel_safe'),
+                    ('cmd_vel_smoothed', '/cmd_vel_selected'),
                     ('cmd_vel', '/cmd_vel'),
                 ],
             ),
