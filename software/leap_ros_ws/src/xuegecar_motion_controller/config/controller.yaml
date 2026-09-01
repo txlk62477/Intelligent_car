@@ -26,7 +26,9 @@ xuegecar_motion_controller:
     follow_startup_timeout: 30.0
     follow_search_timeout: 10.0
     detection_timeout: 0.75
+    target_lock_timeout: 0.75
     min_detection_confidence: 0.5
+    tracking_min_detection_confidence: 0.25
     stable_frames: 3
     center_deadzone: 0.10
     area_deadzone: 0.15

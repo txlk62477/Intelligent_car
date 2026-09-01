@@ -3,7 +3,9 @@ ekf_filter_node:
     frequency: 50.0
     sensor_timeout: 0.3
     two_d_mode: true
-    publish_tf: false
+    # EKF 是唯一的 odom -> base_link TF 发布者；旧 xuegecar_bringup
+    # 原始 /odom TF 广播器不得与它同时运行。
+    publish_tf: true
     publish_acceleration: false
     print_diagnostics: true
     # 正常实车运行由单调 /clock 保证不回拨；保留此项作为异常时钟源的兜底。

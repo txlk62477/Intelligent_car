@@ -3,7 +3,7 @@
 <package format="3">
   <name>xuegecar_cartographer</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Cartographer mapping launch and configuration for xuegecar.</description>
   <maintainer email="sangxin2014@sina.com">root</maintainer>
   <license>TODO: License declaration</license>
 
@@ -13,6 +13,13 @@
   <test_depend>ament_lint_common</test_depend>
 
   <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>camsense_lidar</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>xuegecar_sensor_fusion</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

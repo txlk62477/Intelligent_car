@@ -1,4 +1,4 @@
-image: /home/xuegeros/xuegeros_ws/src/xuegecar_navigation2/maps/room2.pgm
+image: room2.pgm
 mode: trinary
 resolution: 0.05
 origin: [-10, -10, 0]

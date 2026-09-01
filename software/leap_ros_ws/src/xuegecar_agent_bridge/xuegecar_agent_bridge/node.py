@@ -301,7 +301,12 @@ class AgentGatewayNode(Node):
         with self._lock:
             record = self._records.get(operation_id)
             if record is not None:
-                record["status"] = feedback.status
+                # Action feedback may report a terminal controller state before
+                # the Action result callback runs.  Publishing that terminal
+                # state here lets clients submit the next action while this
+                # operation still owns the Gateway's active slot.
+                if feedback.status not in TERMINAL_STATUSES:
+                    record["status"] = feedback.status
                 record["progress"] = float(feedback.progress)
 
     def _follow_feedback(self, operation_id: str, message: Any) -> None:
@@ -346,9 +351,14 @@ class AgentGatewayNode(Node):
             record = self._records.get(operation_id)
             if record is None:
                 return
+            status = (
+                record["status"]
+                if value.status in TERMINAL_STATUSES
+                else value.status
+            )
             record.update(
                 {
-                    "status": value.status,
+                    "status": status,
                     "elapsed_seconds": round(float(value.elapsed_seconds), 3),
                     "target_visible": bool(value.target_visible),
                     "confidence": round(float(value.confidence), 4),

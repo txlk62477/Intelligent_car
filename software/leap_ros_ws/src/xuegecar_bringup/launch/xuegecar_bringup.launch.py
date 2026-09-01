@@ -28,15 +28,10 @@ def generate_launch_description():
 
     )
 
-    xuegecar_bringup = Node(
-        package='xuegecar_bringup',
-        executable='xuegecar_bringup',
-        name='xuegecar_bringup',
-        output='screen',
-    )
-
     ld.add_action(joint_state_publisher_node)
     ld.add_action(robot_state_publisher_node)
-    ld.add_action(xuegecar_bringup)
+    # The legacy xuegecar_bringup executable rebroadcasts raw /odom as TF.
+    # The sensor-fusion EKF now exclusively publishes odom -> base_link, so
+    # launching the legacy broadcaster here would create a conflicting TF tree.
 
     return ld

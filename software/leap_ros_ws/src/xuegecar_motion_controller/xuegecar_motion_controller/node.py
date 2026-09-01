@@ -72,8 +72,12 @@ class MotionControllerNode(Node):
             startup_timeout=float(self.get_parameter("follow_startup_timeout").value),
             search_timeout=float(self.get_parameter("follow_search_timeout").value),
             detection_timeout=float(self.get_parameter("detection_timeout").value),
+            lock_timeout=float(self.get_parameter("target_lock_timeout").value),
             min_confidence=float(
                 self.get_parameter("min_detection_confidence").value
+            ),
+            tracking_min_confidence=float(
+                self.get_parameter("tracking_min_detection_confidence").value
             ),
             stable_frames=int(self.get_parameter("stable_frames").value),
             center_deadzone=float(self.get_parameter("center_deadzone").value),
@@ -167,7 +171,11 @@ class MotionControllerNode(Node):
         self.declare_parameter("follow_startup_timeout", follow.startup_timeout)
         self.declare_parameter("follow_search_timeout", follow.search_timeout)
         self.declare_parameter("detection_timeout", follow.detection_timeout)
+        self.declare_parameter("target_lock_timeout", follow.lock_timeout)
         self.declare_parameter("min_detection_confidence", follow.min_confidence)
+        self.declare_parameter(
+            "tracking_min_detection_confidence", follow.tracking_min_confidence
+        )
         self.declare_parameter("stable_frames", follow.stable_frames)
         self.declare_parameter("center_deadzone", follow.center_deadzone)
         self.declare_parameter("area_deadzone", follow.area_deadzone)

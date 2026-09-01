@@ -6,6 +6,9 @@ import math
 from dataclasses import dataclass
 
 TERMINAL_FOLLOW_STATUSES = {"CANCELLED", "FAILED", "TIMED_OUT"}
+TARGET_LABEL_ALIASES = {
+    "cup": frozenset({"cup", "bottle", "vase"}),
+}
 
 
 @dataclass(frozen=True)
@@ -15,7 +18,9 @@ class FollowConfig:
     startup_timeout: float = 30.0
     search_timeout: float = 10.0
     detection_timeout: float = 0.75
+    lock_timeout: float = 0.75
     min_confidence: float = 0.5
+    tracking_min_confidence: float = 0.25
     stable_frames: int = 3
     center_deadzone: float = 0.10
     area_deadzone: float = 0.15
@@ -79,13 +84,19 @@ class VisualFollowController:
             raise ValueError("target_label 不能为空")
         if timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds 必须大于 0")
+        self._acquisition_labels = TARGET_LABEL_ALIASES.get(
+            self.target_label, frozenset({self.target_label})
+        )
         self._started_at: float | None = None
         self._last_frame_at: float | None = None
+        self._last_match_at: float | None = None
         self._search_started_at: float | None = None
         self._status = "STARTING"
         self._error_code = ""
         self._error = ""
         self._box: DetectionBox | None = None
+        self._candidate_box: DetectionBox | None = None
+        self._candidate_frames = 0
         self._visible = False
         self._image_width = 0
         self._image_height = 0
@@ -122,14 +133,26 @@ class VisualFollowController:
             return
         self._image_width = image_width
         self._image_height = image_height
-        candidates = [
+        self._expire_lock(now)
+        if self._box is None:
+            candidates = [
+                box
+                for box in boxes
+                if box.label in self._acquisition_labels
+                and box.score >= self.config.min_confidence
+                and box.area > 0.0
+            ]
+            self._update_lock_candidate(candidates, now)
+            return
+
+        tracking_candidates = [
             box
             for box in boxes
-            if box.label == self.target_label
-            and box.score >= self.config.min_confidence
+            if box.score >= self.config.tracking_min_confidence
             and box.area > 0.0
+            and box.label in self._acquisition_labels
         ]
-        selected = self._select_candidate(candidates)
+        selected = self._select_candidate(tracking_candidates)
         if selected is None:
             self._mark_searching(now)
             if self._reference_area is None:
@@ -137,14 +160,10 @@ class VisualFollowController:
             return
 
         self._box = selected
+        self._last_match_at = now
         self._visible = True
         self._search_started_at = None
         self._status = "TRACKING"
-        if self._reference_area is None:
-            self._reference_samples.append(selected.area)
-            if len(self._reference_samples) >= self.config.stable_frames:
-                samples = self._reference_samples[-self.config.stable_frames :]
-                self._reference_area = sum(samples) / len(samples)
 
     def tick(self, now: float) -> FollowSnapshot:
         """推进超时状态并计算当前速度。"""
@@ -152,6 +171,7 @@ class VisualFollowController:
             raise RuntimeError("必须先调用 start()")
         elapsed = max(0.0, now - self._started_at)
         if self._status not in TERMINAL_FOLLOW_STATUSES:
+            self._expire_lock(now)
             if elapsed >= self.timeout_seconds:
                 self._finish("TIMED_OUT", "TASK_TIMEOUT", "视觉跟随任务达到总时限")
             elif self._last_frame_at is None:
@@ -232,17 +252,83 @@ class VisualFollowController:
             return None
         if self._box is None:
             return max(candidates, key=lambda box: box.score)
+        return self._spatial_match(self._box, candidates)
+
+    def _spatial_match(
+        self, reference: DetectionBox, candidates: list[DetectionBox]
+    ) -> DetectionBox | None:
+        if not candidates:
+            return None
         ranked = sorted(
             candidates,
-            key=lambda box: (_iou(self._box, box), -_center_distance(self._box, box)),
+            key=lambda box: (_iou(reference, box), -_center_distance(reference, box)),
             reverse=True,
         )
         selected = ranked[0]
-        distance = _center_distance(self._box, selected)
+        distance = _center_distance(reference, selected)
         diagonal = math.hypot(self._image_width, self._image_height)
-        if _iou(self._box, selected) < 0.05 and distance > diagonal * 0.25:
+        overlap = _iou(reference, selected)
+        area_ratio = (
+            selected.area / reference.area if reference.area > 0.0 else 0.0
+        )
+        similar_size = 0.4 <= area_ratio <= 2.5
+        if not similar_size:
+            return None
+        if overlap < 0.20 and distance > diagonal * 0.15:
             return None
         return selected
+
+    def _update_lock_candidate(
+        self, candidates: list[DetectionBox], now: float
+    ) -> None:
+        if not candidates:
+            self._candidate_box = None
+            self._candidate_frames = 0
+            self._reference_samples.clear()
+            self._mark_searching(now)
+            return
+
+        selected = (
+            max(candidates, key=lambda box: box.score)
+            if self._candidate_box is None
+            else self._spatial_match(self._candidate_box, candidates)
+        )
+        if selected is None:
+            selected = max(candidates, key=lambda box: box.score)
+            self._candidate_frames = 0
+            self._reference_samples.clear()
+        self._candidate_box = selected
+        self._candidate_frames += 1
+        self._reference_samples.append(selected.area)
+        self._mark_searching(now)
+        if self._candidate_frames < self.config.stable_frames:
+            return
+
+        samples = self._reference_samples[-self.config.stable_frames :]
+        self._reference_area = sum(samples) / len(samples)
+        self._box = selected
+        self._last_match_at = now
+        self._candidate_box = None
+        self._candidate_frames = 0
+        self._reference_samples.clear()
+        self._visible = True
+        self._search_started_at = None
+        self._status = "TRACKING"
+
+    def _expire_lock(self, now: float) -> None:
+        if (
+            self._box is None
+            or self._last_match_at is None
+            or now - self._last_match_at <= self.config.lock_timeout
+        ):
+            return
+        self._box = None
+        self._last_match_at = None
+        self._reference_area = None
+        self._candidate_box = None
+        self._candidate_frames = 0
+        self._reference_samples.clear()
+        self._mark_searching(now)
 
     def _mark_searching(self, now: float) -> None:
         self._visible = False
