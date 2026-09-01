@@ -31,3 +31,4 @@ artifacts/
 
 # Local experiment data and bags
 /data/
+/test/

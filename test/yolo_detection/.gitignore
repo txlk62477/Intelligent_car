@@ -1,4 +1,0 @@
-.venv/
-models/*.onnx
-output/
-__pycache__/

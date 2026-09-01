@@ -1,5 +1,0 @@
-# 推理运行时（GPU 优先，含 CUDA12/cuDNN 库，WSL2 只需 NVIDIA 驱动）
-# CPU 兜底无需安装：使用系统已有的 opencv-python (cv2.dnn)
-onnxruntime-gpu>=1.19
-numpy>=1.24
-opencv-python>=4.6
