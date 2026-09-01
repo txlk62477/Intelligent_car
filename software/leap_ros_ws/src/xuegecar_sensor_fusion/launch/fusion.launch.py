@@ -61,6 +61,19 @@ def generate_launch_description():
                 parameters=[gate_config, {"use_sim_time": use_sim_time}],
             ),
             Node(
+                package="xuegecar_sensor_fusion",
+                executable="scan_restamp_node",
+                name="scan_restamp",
+                output="screen",
+                parameters=[
+                    {
+                        "scan_in": "/scan",
+                        "scan_out": "/scan_ts",
+                        "use_sim_time": use_sim_time,
+                    }
+                ],
+            ),
+            Node(
                 package="robot_localization",
                 executable="ekf_node",
                 name="ekf_filter_node",

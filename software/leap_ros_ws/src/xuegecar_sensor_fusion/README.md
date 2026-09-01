@@ -50,9 +50,16 @@ stddev=0.04（轮式:陀螺 ≈ 4:1）；原地转弯时放大到 0.16（反转�
 /odom -> sensor_gate_node -> /fusion/odom_valid --+
                                                    +-> ekf_node -> /odometry/filtered
 /imu  -> sensor_gate_node -> /fusion/imu_valid  --+
+
+/scan (MCU) -> scan_restamp_node -> /scan_ts
 ```
 
 `/odometry/filtered` 与原 `/odom` 一样使用 `nav_msgs/msg/Odometry`。第一版是旁路验证模式，不发布 TF，也不修改现有网关话题。
+
+`scan_restamp_node` 把固件发布的 `/scan` 原样透传、仅用节点本地时钟重写 `header.stamp`
+后发到 `/scan_ts`。固件的 scan 时间戳基于"会话开始时一次性计算的 esp_timer→epoch 偏移"，
+会随晶振漂移而与 `/clock` 错开；重打时间戳后 AMCL、代价地图和碰撞监控
+（`xuegecar_navigation2/param/xuegebot.yaml` 已指向 `/scan_ts`）与 TF 时间轴严格一致。
 
 ## 启动
 

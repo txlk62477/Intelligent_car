@@ -38,7 +38,14 @@ ament_target_dependencies(monotonic_clock_node
   rclcpp
   rosgraph_msgs)
 
-install(TARGETS sensor_gate sensor_gate_node monotonic_clock_node
+add_executable(scan_restamp_node src/scan_restamp_node.cpp)
+target_compile_features(scan_restamp_node PUBLIC cxx_std_17)
+ament_target_dependencies(scan_restamp_node
+  rclcpp
+  sensor_msgs
+  std_msgs)
+
+install(TARGETS sensor_gate sensor_gate_node monotonic_clock_node scan_restamp_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
