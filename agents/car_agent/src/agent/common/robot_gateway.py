@@ -59,6 +59,26 @@ class RobotGateway(Protocol):
         """读取当前画面的 YOLO 检测快照。"""
         ...
 
+    def get_navigation_status(self) -> dict[str, Any]:
+        """读取活动地图、AMCL 定位质量和 Nav2 可用性。"""
+        ...
+
+    def preflight_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """校验目标并调用 Nav2 ComputePathToPose。"""
+        ...
+
+    def submit_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """幂等提交 NavigateToPose 任务。"""
+        ...
+
+    def get_navigation(self, operation_id: str) -> dict[str, Any]:
+        """查询 NavigateToPose 任务状态。"""
+        ...
+
+    def cancel_navigation(self, operation_id: str) -> dict[str, Any]:
+        """取消指定 NavigateToPose 任务。"""
+        ...
+
 
 class HttpRobotGateway:
     """通过本机 JSON/HTTP 调用 ROS2 Gateway。"""
@@ -110,6 +130,33 @@ class HttpRobotGateway:
         """读取当前画面的 YOLO 检测快照；探测可能触发 YOLO 冷启动，用更长超时。"""
         return self._request(
             "GET", "/v1/perception/detections", timeout=self._detections_timeout
+        )
+
+    def get_navigation_status(self) -> dict[str, Any]:
+        """读取活动地图、AMCL 位姿和 Nav2 状态。"""
+        return self._request("GET", "/v1/navigation/status")
+
+    def preflight_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """请求 Gateway 做无运动路径预检。"""
+        return self._request("POST", "/v1/navigation/preflight", payload, timeout=10.0)
+
+    def submit_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建 Nav2 导航任务。"""
+        return self._request("POST", "/v1/navigation-tasks", payload)
+
+    def get_navigation(self, operation_id: str) -> dict[str, Any]:
+        """查询 Nav2 导航任务。"""
+        return self._request(
+            "GET",
+            f"/v1/navigation-tasks/{quote(operation_id, safe='')}",
+        )
+
+    def cancel_navigation(self, operation_id: str) -> dict[str, Any]:
+        """取消 Nav2 导航任务。"""
+        return self._request(
+            "POST",
+            f"/v1/navigation-tasks/{quote(operation_id, safe='')}/cancel",
+            {},
         )
 
     def _request(

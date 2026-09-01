@@ -5,6 +5,7 @@ description = "LangGraph supervisor and ROS2 workflows for the Intelligent Car p
 license = "GPL-2.0-only"
 requires-python = ">=3.10"
 dependencies = [
+    "httpx>=0.27,<1.0",
     "langchain-deepseek>=1.0,<2.0",
     "langgraph>=1.2,<2.0",
     "python-dotenv>=1.0.1",

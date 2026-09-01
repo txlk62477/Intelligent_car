@@ -7,5 +7,25 @@
     "follow_workflow": "./src/agent/follow_graph.py:graph"
   },
   "env": ".env",
+  "python_version": "3.12",
+  "checkpointer": {
+    "backend": "default",
+    "ttl": {
+      "strategy": "keep_latest",
+      "sweep_interval_minutes": 60,
+      "default_ttl": 43200
+    }
+  },
+  "store": {
+    "index": {
+      "embed": "./src/agent/memory/embeddings.py:aembed_texts",
+      "dims": 1024,
+      "fields": ["summary", "important_facts", "label", "aliases"]
+    },
+    "ttl": {
+      "refresh_on_read": false,
+      "sweep_interval_minutes": 60
+    }
+  },
   "image_distro": "wolfi"
 }

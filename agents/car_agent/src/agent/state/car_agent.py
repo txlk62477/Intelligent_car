@@ -29,6 +29,24 @@ class FollowResult(TypedDict):
     final_observation: dict[str, Any] | None  # 任务终态时的控制观测
 
 
+class LocationResult(TypedDict):
+    """地图位置新增、更新或删除的结构化结果。"""
+
+    status: str
+    summary: str
+    action: str
+    location: dict[str, Any] | None
+
+
+class NavigationResult(TypedDict):
+    """Nav2 地点导航的结构化结果。"""
+
+    status: str
+    summary: str
+    location: dict[str, Any] | None
+    final_observation: dict[str, Any] | None
+
+
 class CarAgentInput(MessagesState):
     """主图的外部输入；调用者只需提供对话消息。"""
 
@@ -41,6 +59,18 @@ class CarAgentState(MessagesState):
     """主图状态；运行时 ROS2 对象永不进入 checkpoint。"""
 
     # 对话上下文由 MessagesState 提供 messages 字段，保存用户、AI 和 Tool 消息。
+
+    # Agent Server Store 长期记忆；公共输出 Schema 不暴露这些内部字段。
+    memory_user_id: NotRequired[str]
+    memory_robot_id: NotRequired[str]
+    memory_turn_start_message_id: NotRequired[str | None]
+    memory_profile: NotRequired[dict[str, Any]]
+    memory_episodes: NotRequired[list[dict[str, Any]]]
+    memory_context: NotRequired[str]
+    memory_load_error: NotRequired[str]
+    memory_saved: NotRequired[bool]
+    memory_save_error: NotRequired[str]
+    memory_extraction_error: NotRequired[str]
 
     # Supervisor → 移动子图：结构化 handoff 数据。
     motion_actions: NotRequired[list[dict[str, Any]]]  # 按用户顺序排列的动作列表
@@ -75,3 +105,27 @@ class CarAgentState(MessagesState):
 
     # 跟随子图 → Supervisor：压缩后的唯一结构化输出。
     follow_result: NotRequired[FollowResult | None]  # collect 节点将其转成 ToolMessage
+
+    # Supervisor → 地图位置教学/删除 Workflow。
+    location_action: NotRequired[str]
+    location_query: NotRequired[str]
+    location_label: NotRequired[str]
+    location_aliases: NotRequired[list[str]]
+    location_tool_call_id: NotRequired[str]
+    location_plan_id: NotRequired[str]
+    location_status: NotRequired[str]
+    location_error: NotRequired[str]
+    location_map_status: NotRequired[dict[str, Any]]
+    location_existing: NotRequired[dict[str, Any] | None]
+    location_selected: NotRequired[dict[str, Any] | None]
+    location_candidates: NotRequired[list[dict[str, Any]]]
+    location_result: NotRequired[LocationResult | None]
+
+    # Supervisor → Nav2 地点导航 Workflow。
+    navigation_timeout_seconds: NotRequired[float]
+    navigation_tool_call_id: NotRequired[str]
+    navigation_plan_id: NotRequired[str]
+    navigation_status: NotRequired[str]
+    navigation_error: NotRequired[str]
+    navigation_operation: NotRequired[dict[str, Any] | None]
+    navigation_result: NotRequired[NavigationResult | None]
