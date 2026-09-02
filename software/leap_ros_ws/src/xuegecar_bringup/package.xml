@@ -3,20 +3,26 @@
 <package format="3">
   <name>xuegecar_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>XuegeCar robot description and shared control-safety bringup.</description>
   <maintainer email="xuegeros@todo.todo">xuegeros</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>geometry_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>tf2</depend>
-  <depend>tf2_ros</depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav2_collision_monitor</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
+  <exec_depend>xuegecar_description</exec_depend>
+  <exec_depend>xuegecar_motion_controller</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

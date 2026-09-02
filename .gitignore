@@ -29,6 +29,13 @@ artifacts/
 # Local reference repositories
 /references/
 
+# Private resume files
+/简历/
+
 # Local experiment data and bags
 /data/
 /test/
+/bags/
+
+# Local authentication material
+/software/leap_ros_ws/token.txt

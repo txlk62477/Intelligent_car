@@ -1,0 +1,29 @@
+xuegecar_web_gui:
+  ros__parameters:
+    host: "0.0.0.0"
+    port: 8000
+
+    # 订阅话题
+    camera_topic: "/camera/image_raw/compressed"
+    odom_topic: "/odometry/filtered"
+    battery_state_topic: "/battery_state"
+    voltage_topics: ["/voltage", "/battery_voltage"]
+    percent_topics: ["/battery_percent"]
+
+    # 发布话题（twist_mux 手动输入，优先级 200）
+    cmd_vel_topic: "/cmd_vel_teleop"
+
+    # 控制与安全
+    publish_rate_hz: 10.0       # Twist 发布频率
+    command_timeout: 0.3        # 看门狗：无新命令超时即零速（秒）
+    session_timeout: 10.0       # 控制会话无活动超时（秒）
+
+    # 速度上限与默认值（与 Qt 上位机一致）
+    max_linear_cap: 2.0
+    max_angular_cap: 5.0
+    default_max_linear: 0.3
+    default_max_angular: 1.0
+
+    # 急停服务（motion_controller；不可用时回退为心跳直接锁 mux）
+    estop_service: "/motion/emergency_stop"
+    unlock_service: "/motion/set_emergency_lock"

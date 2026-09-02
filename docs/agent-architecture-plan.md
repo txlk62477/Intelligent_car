@@ -297,15 +297,20 @@ Motion / Follow       → /cmd_vel_agent  (priority 150) ─┤
 
 Jazzy 的 `twist_mux` 已显式配置 `use_stamped: false`，与当前 Motion Controller 和 Nav2 的
 `geometry_msgs/Twist` 一致；输出使用绝对 remap `/cmd_vel_out → /cmd_vel_selected`。
+`xuegecar_bringup/control_core.launch.py` 是 mux 和 Collision Monitor 的唯一所有者；
+Gateway、Navigation2 和 Web GUI 只按需包含该核心，不再各自创建 mux。
+twist_mux 固定使用系统时间计算输入和锁心跳超时，不跟随 `/clock`；这样单调时钟节点
+停止时，0.5 秒急停看门狗仍能继续计时并锁止输出。
 
 统一仲裁规则：
 
-1. 急停锁 255：遮蔽所有速度源；Gateway 每 0.1 秒发送心跳，心跳超时也进入锁止。
+1. 急停锁 255：遮蔽所有速度源；Motion Controller 每 0.1 秒发送心跳，心跳超时也进入锁止。
 2. 人工控制 200：覆盖 Agent 与 Nav2。
 3. Agent 移动/跟随 150：覆盖 Nav2。
 4. Nav2 100：最低自主控制优先级。
 5. Gateway 全局任务槽不允许移动、跟随和导航并行。
-6. 若检测到 `/cmd_vel_agent` 与 `/cmd_vel_nav` 同时存在非零指令，按冲突处理并触发急停锁。
+6. 若检测到 `/cmd_vel_agent` 与 `/cmd_vel_nav` 同时存在非零指令，按冲突处理，
+   Gateway 通过 `/motion/set_emergency_lock` 服务触发急停锁。
 7. Collision Monitor 位于 mux 下游，是到达底盘前的最终碰撞防护。
 8. `POST /v1/stop` 无需模型确认，会取消活动 Action、触发急停并保持最高优先级锁。
 

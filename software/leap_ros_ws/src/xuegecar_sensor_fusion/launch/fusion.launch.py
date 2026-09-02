@@ -81,16 +81,5 @@ def generate_launch_description():
                 parameters=[ekf_config, {"use_sim_time": use_sim_time}],
                 remappings=[("odometry/filtered", "/odometry/filtered")],
             ),
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="static_tf_pub_imu",
-                arguments=[
-                    "--x", "0", "--y", "0", "--z", "0.02",
-                    "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
-                    "--frame-id", "base_link",
-                    "--child-frame-id", "imu_link",
-                ],
-            ),
         ]
     )

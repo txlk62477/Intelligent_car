@@ -1,0 +1,37 @@
+collision_monitor:
+  ros__parameters:
+    base_frame_id: base_link
+    odom_frame_id: odom
+    cmd_vel_in_topic: /cmd_vel_selected
+    cmd_vel_out_topic: /cmd_vel
+    state_topic: collision_monitor_state
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    stop_pub_timeout: 2.0
+    enable_stamped_cmd_vel: false
+    # A static polygon keeps Collision Monitor usable without a running Nav2
+    # costmap. EmergencyStop is the measured body envelope plus 2 cm.
+    polygons: [EmergencyStop, FootprintApproach]
+    EmergencyStop:
+      type: polygon
+      points: "[[0.144, 0.0925], [0.144, -0.0925], [-0.0525, -0.0925], [-0.0525, 0.0925]]"
+      action_type: stop
+      min_points: 3
+      visualize: true
+      polygon_pub_topic: emergency_stop_polygon
+      enabled: true
+    FootprintApproach:
+      type: polygon
+      points: "[[0.124, 0.0725], [0.124, -0.0725], [-0.0325, -0.0725], [-0.0325, 0.0725]]"
+      action_type: approach
+      time_before_collision: 0.3
+      simulation_time_step: 0.05
+      min_points: 3
+      visualize: true
+      polygon_pub_topic: footprint_approach_polygon
+      enabled: true
+    observation_sources: [scan]
+    scan:
+      type: scan
+      topic: /scan_ts
+      enabled: true

@@ -3,7 +3,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -73,21 +73,6 @@ def generate_launch_description():
                 ),
                 launch_arguments={"use_sim_time": use_sim_time}.items(),
                 condition=IfCondition(start_lidar),
-            ),
-            # The MCU already publishes /scan with frame_id=laser_frame.  When
-            # the optional local driver is disabled, publish only its fixed
-            # mounting transform here (without starting another /scan source).
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="static_tf_pub_laser_mapping",
-                arguments=[
-                    "--x", "0", "--y", "0", "--z", "0.075",
-                    "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
-                    "--frame-id", "base_link",
-                    "--child-frame-id", "laser_frame",
-                ],
-                condition=UnlessCondition(start_lidar),
             ),
             Node(
                 package="cartographer_ros",

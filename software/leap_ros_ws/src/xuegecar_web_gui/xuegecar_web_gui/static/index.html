@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>XuegeCar 遥控</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- 顶部状态栏 -->
+  <header id="status-bar">
+    <div class="brand">
+      <span class="brand-logo">◎</span>
+      <span class="brand-name">XuegeCar</span>
+    </div>
+    <div class="pills">
+      <span id="pill-conn" class="pill">未连接</span>
+      <span id="pill-battery" class="pill">电池 --</span>
+      <span id="pill-camera" class="pill">摄像头 --</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- 摄像头 -->
+    <section id="camera-card" class="card">
+      <div class="camera-wrap">
+        <img id="camera" alt="摄像头画面">
+        <div id="camera-placeholder">等待摄像头…</div>
+      </div>
+      <div class="camera-meta">
+        <span id="camera-fps">0.0 fps</span>
+        <span id="speed-readout">下发 0.00 m/s · 0.00 rad/s</span>
+      </div>
+    </section>
+
+    <div class="dashboard-bottom">
+      <!-- 驾驶控制区 -->
+      <section id="control-card" class="card">
+        <div class="tabs" id="control-tabs">
+          <button class="tab active" data-mode="joystick">摇杆</button>
+          <button class="tab" data-mode="dpad">方向键</button>
+        </div>
+
+        <div class="sliders">
+          <label>线速度 <span><b id="linear-value">0.30</b> m/s</span>
+            <input type="range" id="linear-slider" min="0" max="2" step="0.05" value="0.3">
+          </label>
+          <label>角速度 <span><b id="angular-value">1.00</b> rad/s</span>
+            <input type="range" id="angular-slider" min="0" max="5" step="0.05" value="1.0">
+          </label>
+        </div>
+
+        <div class="control-panels">
+          <div id="joystick-panel" class="panel">
+            <div id="joystick-zone">
+              <div id="joystick"></div>
+            </div>
+          </div>
+
+          <div id="dpad-panel" class="panel hidden">
+            <div class="dpad">
+              <button class="dpad-btn" data-dir="up">▲</button>
+              <button class="dpad-btn" data-dir="left">◀</button>
+              <div class="dpad-center"></div>
+              <button class="dpad-btn" data-dir="right">▶</button>
+              <button class="dpad-btn" data-dir="down">▼</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 安全控制区 -->
+      <section id="safety-card" class="card">
+        <div class="safety-title">安全控制</div>
+        <button id="btn-estop" class="btn-warn">急停锁</button>
+        <div class="safety-secondary">
+          <button id="btn-stop" class="btn-stop">停止</button>
+          <button id="btn-unlock" class="btn-ghost">解锁</button>
+        </div>
+      </section>
+    </div>
+
+    <footer id="hint">
+      摇杆上=前进 · 左=左转 | 按键支持多点触控斜向组合 | 仅允许一台设备控制
+    </footer>
+  </main>
+
+  <!-- 忙碌/断线遮罩 -->
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-box">
+      <div class="overlay-icon">⚠</div>
+      <div id="overlay-title">连接断开</div>
+      <div id="overlay-desc">正在重连…</div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/nipplejs.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

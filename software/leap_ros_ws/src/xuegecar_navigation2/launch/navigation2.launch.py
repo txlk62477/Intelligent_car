@@ -4,11 +4,14 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -16,7 +19,6 @@ def generate_launch_description():
 
     map_yaml = LaunchConfiguration('map')
     params_file = LaunchConfiguration('params_file')
-    mux_params_file = str(package_share / 'config' / 'twist_mux.yaml')
     use_sim_time = ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool
     )
@@ -34,7 +36,6 @@ def generate_launch_description():
         'bt_navigator',
         'waypoint_follower',
         'velocity_smoother',
-        'collision_monitor',
     ]
 
     return LaunchDescription(
@@ -63,6 +64,34 @@ def generate_launch_description():
                 'rviz',
                 default_value='true',
                 description='Start RViz with the xuegecar navigation view',
+            ),
+            DeclareLaunchArgument(
+                'launch_control_core',
+                default_value='true',
+                description='Start the shared motion controller and velocity safety pipeline',
+            ),
+            DeclareLaunchArgument(
+                'use_collision_monitor',
+                default_value='true',
+                description='Enable collision filtering in the shared control core',
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution(
+                        [
+                            FindPackageShare('xuegecar_bringup'),
+                            'launch',
+                            'control_core.launch.py',
+                        ]
+                    )
+                ),
+                launch_arguments={
+                    'use_collision_monitor': LaunchConfiguration(
+                        'use_collision_monitor'
+                    ),
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                }.items(),
+                condition=IfCondition(LaunchConfiguration('launch_control_core')),
             ),
             Node(
                 package='nav2_map_server',
@@ -149,26 +178,6 @@ def generate_launch_description():
                 + [
                     ('cmd_vel', 'cmd_vel_nav_raw'),
                     ('cmd_vel_smoothed', 'cmd_vel_nav'),
-                ],
-            ),
-            Node(
-                package='twist_mux',
-                executable='twist_mux',
-                name='twist_mux',
-                output='screen',
-                parameters=[mux_params_file, {'use_sim_time': use_sim_time}],
-                remappings=[('/cmd_vel_out', '/cmd_vel_selected')],
-            ),
-            Node(
-                package='nav2_collision_monitor',
-                executable='collision_monitor',
-                name='collision_monitor',
-                output='screen',
-                parameters=common_parameters,
-                remappings=tf_remappings
-                + [
-                    ('cmd_vel_smoothed', '/cmd_vel_selected'),
-                    ('cmd_vel', '/cmd_vel'),
                 ],
             ),
             Node(

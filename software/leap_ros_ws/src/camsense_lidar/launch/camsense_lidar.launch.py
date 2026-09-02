@@ -35,35 +35,8 @@ def generate_launch_description():
         namespace="/",
     )
 
-    tf2_node = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="static_tf_pub_laser",
-        arguments=[
-            "--x",
-            "0",
-            "--y",
-            "0",
-            "--z",
-            "0.075",
-            "--qx",
-            "0",
-            "--qy",
-            "0",
-            "--qz",
-            "0",
-            "--qw",
-            "1",
-            "--frame-id",
-            "base_link",
-            "--child-frame-id",
-            "laser_frame",
-        ],
-    )
-
     return LaunchDescription([
         params_declare,
         use_sim_time_declare,
         driver_node,
-        tf2_node,
     ])

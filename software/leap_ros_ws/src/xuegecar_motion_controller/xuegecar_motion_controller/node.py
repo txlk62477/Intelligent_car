@@ -19,7 +19,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_srvs.srv import Trigger
+from std_msgs.msg import Bool
+from std_srvs.srv import SetBool, Trigger
 
 from xuegecar_motion_controller.controller import (
     ControllerConfig,
@@ -55,6 +56,7 @@ class MotionControllerNode(Node):
         self._reserved = False
         self._active_kind: str | None = None
         self._emergency_epoch = 0
+        self._mux_locked = False
         self._follow: VisualFollowController | None = None
 
         controller_defaults = ControllerConfig()
@@ -109,6 +111,11 @@ class MotionControllerNode(Node):
         odom_topic = str(self.get_parameter("odom_topic").value)
         detections_topic = str(self.get_parameter("detections_topic").value)
         self._publisher = self.create_publisher(Twist, cmd_vel_topic, 10)
+        emergency_lock_topic = str(self.get_parameter("emergency_lock_topic").value)
+        self._emergency_lock_publisher = self.create_publisher(
+            Bool, emergency_lock_topic, 10
+        )
+        self.create_timer(0.1, self._publish_mux_lock)
         self.create_subscription(
             Odometry,
             odom_topic,
@@ -134,6 +141,12 @@ class MotionControllerNode(Node):
             self._on_emergency_stop,
             callback_group=self._callbacks,
         )
+        self._set_emergency_lock_service = self.create_service(
+            SetBool,
+            "/motion/set_emergency_lock",
+            self._on_set_emergency_lock,
+            callback_group=self._callbacks,
+        )
         self._motion_action = ActionServer(
             self,
             ExecuteMotion,
@@ -154,7 +167,7 @@ class MotionControllerNode(Node):
         )
         self.get_logger().info(
             f"Motion Controller ready; odom={odom_topic}, detections={detections_topic}, "
-            f"exclusive cmd_vel={cmd_vel_topic}"
+            f"exclusive cmd_vel={cmd_vel_topic}, mux_lock={emergency_lock_topic}"
         )
 
     def _declare_parameters(
@@ -162,6 +175,7 @@ class MotionControllerNode(Node):
     ) -> None:
         self.declare_parameter("odom_topic", "/odometry/filtered")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("emergency_lock_topic", "/cmd_vel_emergency_lock")
         self.declare_parameter("detections_topic", "/vision/detections")
         self.declare_parameter("control_rate_hz", 20.0)
         for name in controller.__dataclass_fields__:
@@ -391,12 +405,30 @@ class MotionControllerNode(Node):
         now = time.monotonic()
         with self._lock:
             self._emergency_epoch += 1
+            self._mux_locked = True
             self._controller.stop(now, "收到急停请求")
             if self._follow is not None:
                 self._follow.cancel(now, "收到急停请求")
         self._publish_stop_burst()
         response.success = True
-        response.message = "已取消当前任务并停车"
+        response.message = "已取消当前任务并锁止速度仲裁"
+        return response
+
+    def _publish_mux_lock(self) -> None:
+        """向 twist_mux 发布急停锁心跳（10Hz）；停止发布超过看门狗超时即锁止。"""
+        message = Bool()
+        with self._lock:
+            message.data = self._mux_locked
+        self._emergency_lock_publisher.publish(message)
+
+    def _on_set_emergency_lock(
+        self, request: SetBool.Request, response: SetBool.Response
+    ) -> SetBool.Response:
+        """外部（Gateway）请求锁止/解除 twist_mux 速度仲裁锁。"""
+        with self._lock:
+            self._mux_locked = bool(request.data)
+        response.success = True
+        response.message = "已锁止速度仲裁" if request.data else "已解除速度仲裁锁"
         return response
 
     def _set_perception(
@@ -475,6 +507,7 @@ class MotionControllerNode(Node):
     def destroy_node(self) -> None:
         self._motion_action.destroy()
         self._follow_action.destroy()
+        self._set_emergency_lock_service.destroy()
         super().destroy_node()
 
 

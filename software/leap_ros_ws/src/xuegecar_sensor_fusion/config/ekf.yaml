@@ -3,7 +3,9 @@ ekf_filter_node:
     frequency: 50.0
     sensor_timeout: 0.3
     two_d_mode: true
-    # EKF 是唯一的 odom -> base_link TF 发布者；旧 xuegecar_bringup
+    # EKF 是唯一的 odom -> base_footprint TF 发布者；robot_state_publisher
+    # 再发布静态 base_footprint -> base_link，保证 TF 树中每个子坐标系只有一个父级。
+    # 旧 xuegecar_bringup
     # 原始 /odom TF 广播器不得与它同时运行。
     publish_tf: true
     publish_acceleration: false
@@ -13,7 +15,7 @@ ekf_filter_node:
 
     map_frame: map
     odom_frame: odom
-    base_link_frame: base_link
+    base_link_frame: base_footprint
     world_frame: odom
 
     # 状态顺序：x, y, z,

@@ -273,7 +273,7 @@ QWidget * MainWindow::createLaunchPanel()
   auto * layout = new QGridLayout(group);
   const std::vector<std::pair<QString, QString>> commands = {
     {"Micro-ROS", "ros2 launch micro_ros_agent micro_ros_agent_launch.py"},
-    {"底层驱动", "ros2 launch xuegecar_bringup xuegecar_bringup.launch.py"},
+    {"控制核心", "ros2 launch xuegecar_bringup control_core.launch.py"},
     {"摄像头", "ros2 launch xuegecar_camera http_video_publisher.launch.py"},
     {"SLAM+Nav2", "ros2 launch xuegecar_navigation2 slam_nav2.launch.py"},
   };

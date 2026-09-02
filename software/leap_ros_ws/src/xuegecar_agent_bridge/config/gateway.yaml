@@ -25,7 +25,6 @@ xuegecar_agent_bridge:
     amcl_max_yaw_std: 0.349066
     navigation_goal_clearance: 0.20
     navigation_max_timeout: 900.0
-    emergency_lock_topic: "/cmd_vel_emergency_lock"
     agent_cmd_vel_topic: "/cmd_vel_agent"
     nav_cmd_vel_topic: "/cmd_vel_nav"
     command_conflict_window: 0.30

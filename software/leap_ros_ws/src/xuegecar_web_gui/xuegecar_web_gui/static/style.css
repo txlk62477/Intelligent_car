@@ -1,0 +1,374 @@
+:root {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --card-border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #2f80ed;
+  --danger: #ef4444;
+  --warn: #f59e0b;
+  --ok: #22c55e;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+body {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) 10px env(safe-area-inset-bottom);
+}
+
+main {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-rows: minmax(120px, 40%) minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+/* ---------- 状态栏 ---------- */
+#status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 2px 8px;
+  gap: 8px;
+}
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-logo { color: var(--accent); font-size: 26px; font-weight: 800; }
+.brand-name { font-size: 17px; font-weight: 700; }
+.pills { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.pill {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pill.ok { color: var(--ok); border-color: #166534; }
+.pill.warn { color: var(--warn); border-color: #92400e; }
+.pill.err { color: var(--danger); border-color: #7f1d1d; }
+
+/* ---------- 卡片 ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---------- 摄像头 ---------- */
+.camera-card { min-height: 0; }
+#camera-card {
+  display: flex;
+  flex-direction: column;
+}
+.camera-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+#camera { width: 100%; height: 100%; object-fit: contain; display: block; }
+#camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 15px;
+  background: #0b1120;
+  pointer-events: none;
+}
+#camera-placeholder.hidden { display: none; }
+.camera-meta {
+  display: flex;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- 标签页 ---------- */
+.dashboard-bottom {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(120px, 0.8fr);
+  gap: 8px;
+}
+
+#control-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 6px;
+}
+
+.tabs { display: flex; gap: 6px; }
+.tab {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.control-panels, .panel { min-height: 0; height: 100%; }
+.panel.hidden { display: none; }
+
+/* ---------- 摇杆 ---------- */
+#joystick-zone {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 96px;
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at center, rgba(47, 128, 237, 0.08), transparent 65%);
+  border: 1px dashed var(--card-border);
+  touch-action: none;
+}
+#joystick { position: absolute; inset: 0; }
+
+/* ---------- 按键 ---------- */
+.dpad {
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, min(22vw, 64px));
+  grid-template-rows: repeat(3, min(7vh, 52px));
+  gap: 5px;
+  align-content: center;
+  justify-content: center;
+  padding: 2px 0;
+  touch-action: none;
+}
+.dpad-btn {
+  border-radius: 12px;
+  border: 1px solid var(--card-border);
+  background: #273449;
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+  touch-action: none;
+}
+.dpad-btn:active, .dpad-btn.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.dpad-btn[data-dir="up"] { grid-area: 1 / 2; }
+.dpad-btn[data-dir="left"] { grid-area: 2 / 1; }
+.dpad-btn[data-dir="right"] { grid-area: 2 / 3; }
+.dpad-btn[data-dir="down"] { grid-area: 3 / 2; }
+.dpad-center {
+  grid-area: 2 / 2;
+  border-radius: 50%;
+  background: #273449;
+  border: 1px solid var(--card-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- 滑条 ---------- */
+.sliders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.sliders label {
+  font-size: 11px;
+  color: var(--muted);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 6px;
+}
+.sliders label span { color: var(--muted); white-space: nowrap; }
+.sliders label b { color: var(--text); font-weight: 700; }
+input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent);
+  height: 20px;
+}
+
+/* ---------- 按钮 ---------- */
+#safety-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.safety-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+#safety-card button {
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#btn-estop {
+  width: 100%;
+  min-height: 74px;
+  font-size: clamp(20px, 4vw, 34px) !important;
+  border: 2px solid #f97316 !important;
+  box-shadow: inset 0 0 0 2px rgba(15, 23, 42, 0.4);
+}
+.safety-secondary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.safety-secondary button {
+  min-height: 40px;
+  padding: 7px 3px;
+}
+.btn-stop { background: var(--danger); border-color: var(--danger) !important; color: #fff !important; }
+.btn-warn { background: #92400e; }
+.btn-warn.locked { background: var(--warn); border-color: var(--warn) !important; color: #111 !important; }
+.btn-ghost { background: transparent; color: var(--muted) !important; }
+
+#hint {
+  text-align: center;
+  font-size: 12px;
+  color: #475569;
+  padding: 0 8px;
+  line-height: 1.25;
+}
+
+@media (orientation: landscape) and (max-height: 600px) {
+  body {
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-left: max(8px, env(safe-area-inset-left));
+  }
+  #status-bar { padding: 3px 2px 5px; }
+  .brand-logo { font-size: 20px; }
+  .brand-name { font-size: 14px; }
+  .pill { padding: 2px 7px; font-size: 10px; }
+
+  /* 手机横屏使用三栏：摄像头、驾驶控制、安全控制。 */
+  main {
+    grid-template-columns: minmax(0, 1.45fr) minmax(330px, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 6px;
+  }
+  #camera-card {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .dashboard-bottom {
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: minmax(200px, 1fr) minmax(116px, 0.52fr);
+    gap: 6px;
+  }
+  .card { padding: 6px; border-radius: 10px; }
+  .camera-meta { margin-top: 3px; font-size: 10px; }
+  #control-card {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 5px;
+  }
+  #control-tabs,
+  .sliders,
+  .control-panels {
+    grid-column: 1;
+  }
+  #control-tabs { grid-row: 1; }
+  .sliders {
+    grid-row: 2;
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .control-panels { grid-row: 3; }
+  #joystick-zone { min-height: 88px; }
+  .dpad {
+    grid-template-columns: repeat(3, min(8vw, 58px));
+    grid-template-rows: repeat(3, min(12vh, 46px));
+  }
+  #safety-card { gap: 6px; }
+  #btn-estop {
+    min-height: 90px;
+    font-size: clamp(18px, 3vw, 28px) !important;
+  }
+  .safety-secondary { grid-template-columns: 1fr; }
+  .safety-secondary button { min-height: 36px; }
+  #hint { display: none; }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 720px) {
+  .brand-name { display: none; }
+  main { grid-template-columns: minmax(0, 1fr) minmax(315px, 1.05fr); }
+  .dashboard-bottom {
+    grid-template-columns: minmax(190px, 1fr) minmax(110px, 0.52fr);
+  }
+  .pill { padding-right: 5px; padding-left: 5px; }
+  .camera-meta { font-size: 9px; }
+}
+
+@media (orientation: portrait) and (max-width: 520px) {
+  body { padding-right: 6px; padding-left: 6px; }
+  #status-bar { padding-top: 4px; }
+  .brand-name { display: none; }
+  .pills { gap: 3px; }
+  .pill { padding: 3px 6px; font-size: 10px; }
+  main { grid-template-rows: minmax(150px, 32%) minmax(0, 1fr) auto; gap: 6px; }
+  .dashboard-bottom { grid-template-columns: minmax(0, 1.75fr) minmax(105px, 0.75fr); gap: 6px; }
+  .card { padding: 6px; }
+  .sliders { grid-template-columns: 1fr; gap: 2px; }
+  .dpad { grid-template-columns: repeat(3, min(15vw, 54px)); grid-template-rows: repeat(3, min(7vh, 48px)); }
+  #btn-estop { min-height: 90px; }
+  .safety-secondary { grid-template-columns: 1fr; }
+  #hint { font-size: 9px; }
+}
+
+/* ---------- 遮罩 ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.overlay.hidden { display: none; }
+.overlay-box { text-align: center; padding: 32px; }
+.overlay-icon { font-size: 48px; color: var(--warn); }
+#overlay-title { font-size: 20px; font-weight: 700; margin-top: 14px; }
+#overlay-desc { font-size: 14px; color: var(--muted); margin-top: 8px; }

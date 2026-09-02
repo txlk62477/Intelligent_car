@@ -19,7 +19,7 @@ source install/setup.bash
 - `src/leap_interfaces`: 给底层固件和上位机用的自定义服务接口。
 - `src/openslam_gmapping`: 经典 GMapping SLAM 代码包。
 - `src/slam_gmapping`: ROS 2 下的 GMapping 封装与启动配置。
-- `src/xuegecar_bringup`: 车体基础启动包，加载 URDF、状态发布和底盘节点。
+- `src/xuegecar_bringup`: 整车启动包，统一加载 URDF、状态发布、速度仲裁和碰撞监控。
 - `src/xuegecar_camera`: HTTP/MJPEG 摄像头流转 ROS 图像消息。
 - `src/xuegecar_cartographer`: Cartographer 建图相关配置与启动文件。
 - `src/xuegecar_description`: 车体模型、URDF 和描述资源。

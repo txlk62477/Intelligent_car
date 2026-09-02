@@ -1,124 +1,131 @@
 <?xml version="1.0"?>
 <robot name="xuegecar">
-    
-    <!-- Robot Footprint -->
+  <!--
+    Measured navigation geometry (metres):
+      axle centre -> front:  0.124
+      axle centre -> rear:  -0.0325
+      outer wheel envelope: y = +/-0.0725
+      ground -> lidar top:   0.145
+
+    base_link is the midpoint of the drive-wheel axle. base_footprint is its
+    projection onto the ground. The box is a deliberately simple outer
+    envelope for visualization and collision checking, not a detailed CAD
+    model.
+  -->
   <link name="base_footprint"/>
 
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0.0 0.0 0.076" rpy="0 0 0"/>
+    <origin xyz="0 0 0.0325" rpy="0 0 0"/>
   </joint>
 
-
-
-  <!-- base link -->
   <link name="base_link">
-  	<visual>
-      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+    <visual>
+      <!-- Centre of x=[-0.0325, 0.124], z=[ground, 0.145]. -->
+      <origin xyz="0.04575 0 0.04" rpy="0 0 0"/>
       <geometry>
-		<cylinder length="0.12" radius="0.10"/>
+        <box size="0.1565 0.145 0.145"/>
       </geometry>
-      <material name="blue">
-      	<color rgba="0.1 0.1 1.0 0.5" /> 
+      <material name="body_blue">
+        <color rgba="0.1 0.1 1.0 0.35"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.04575 0 0.04" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1565 0.145 0.145"/>
+      </geometry>
+    </collision>
   </link>
-    
-  <!-- laser link -->
+
   <link name="laser_frame">
-  	<visual>
+    <visual>
+      <!-- Scan plane is at the cylinder centre; its top is at 0.145 m. -->
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-		<cylinder length="0.02" radius="0.02"/>
+        <cylinder length="0.014" radius="0.02"/>
       </geometry>
-      <material name="black">
-      	<color rgba="0.0 0.0 0.0 0.5" /> 
+      <material name="sensor_black">
+        <color rgba="0 0 0 0.7"/>
       </material>
     </visual>
   </link>
-    
-  <!-- laser joint -->
+
   <joint name="laser_joint" type="fixed">
-      <parent link="base_link" />
-      <child link="laser_frame" />
-      <origin xyz="0 0 0.075" />
+    <parent link="base_link"/>
+    <child link="laser_frame"/>
+    <origin xyz="0.020 0 0.1055" rpy="0 0 0"/>
   </joint>
 
   <link name="imu_link">
-  	<visual>
-      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-		    <box size="0.02 0.02 0.02"/>
+        <box size="0.02 0.02 0.01"/>
       </geometry>
+      <material name="imu_green">
+        <color rgba="0.1 0.7 0.2 0.7"/>
+      </material>
     </visual>
   </link>
 
-  <!-- imu joint -->
   <joint name="imu_joint" type="fixed">
-      <parent link="base_link" />
-      <child link="imu_link" />
-      <origin xyz="0 0 0.02" />
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <!-- IMU position is visualization-only; EKF currently fuses gyro_z. -->
+    <origin xyz="0.020 0 0.0635" rpy="0 0 0"/>
   </joint>
 
-
   <link name="left_wheel_link">
-      <visual>
-        <origin xyz="0 0 0" rpy="1.57079 0 0"/>
-        <geometry>
-          <cylinder length="0.04" radius="0.032"/>
-        </geometry>
-          <material name="black">
-            <color rgba="0.0 0.0 0.0 0.5" /> 
-          </material>
-      </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.57079 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.0325"/>
+      </geometry>
+      <material name="wheel_black">
+        <color rgba="0.02 0.02 0.02 1"/>
+      </material>
+    </visual>
   </link>
-    
+
   <joint name="left_wheel_joint" type="continuous">
-      <parent link="base_link" />
-      <child link="left_wheel_link" />
-      <origin xyz="-0.02 0.10 -0.06" />
-      <axis xyz="0 1 0" />
+    <parent link="base_link"/>
+    <child link="left_wheel_link"/>
+    <origin xyz="0 0.0525 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
   </joint>
 
   <link name="right_wheel_link">
-      <visual>
-        <origin xyz="0 0 0" rpy="1.57079 0 0"/>
-        <geometry>
-          <cylinder length="0.04" radius="0.032"/>
-        </geometry>
-          <material name="black">
-            <color rgba="0.0 0.0 0.0 0.5" /> 
-          </material>
-      </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.57079 0 0"/>
+      <geometry>
+        <cylinder length="0.04" radius="0.0325"/>
+      </geometry>
+      <material name="wheel_black"/>
+    </visual>
   </link>
-    
+
   <joint name="right_wheel_joint" type="continuous">
-      <parent link="base_link" />
-      <child link="right_wheel_link" />
-      <origin xyz="-0.02 -0.10 -0.06" />
-      <axis xyz="0 1 0" />
+    <parent link="base_link"/>
+    <child link="right_wheel_link"/>
+    <origin xyz="0 -0.0525 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
   </joint>
 
   <link name="caster_link">
     <visual>
-      <origin xyz="0 0 0" rpy="1.57079 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-          <sphere radius="0.016"/>
+        <sphere radius="0.016"/>
       </geometry>
-        <material name="black">
-          <color rgba="0.0 0.0 0.0 0.5" /> 
-        </material>
+      <material name="wheel_black"/>
     </visual>
   </link>
-    
+
   <joint name="caster_joint" type="fixed">
-      <parent link="base_link" />
-      <child link="caster_link" />
-      <origin xyz="0.06 0.0 -0.076" />
-      <axis xyz="0 1 0" />
+    <parent link="base_link"/>
+    <child link="caster_link"/>
+    <origin xyz="0.080 0 -0.0165" rpy="0 0 0"/>
   </joint>
-
-
-
 </robot>

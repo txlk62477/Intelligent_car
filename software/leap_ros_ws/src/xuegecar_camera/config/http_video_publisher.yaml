@@ -1,6 +1,6 @@
 http_video_publisher:
   ros__parameters:
-    url: "http://10.96.103.61:81/"
+    url: "http://10.32.89.61:81/"
     topic: "/camera/image_raw/compressed"
     raw_topic: "/camera/image_raw"
     frame_id: "camera_link"

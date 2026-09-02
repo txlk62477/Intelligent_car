@@ -1,6 +1,5 @@
 twist_mux:
   ros__parameters:
-    # Motion Controller 与当前 Nav2 参数均使用 geometry_msgs/Twist。
     use_stamped: false
     topics:
       navigation:

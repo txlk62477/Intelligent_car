@@ -29,8 +29,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Bool
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 from xuegecar_agent_bridge.camera_snapshot import CameraSnapshotStore
 from xuegecar_agent_bridge.detections import (
@@ -104,7 +103,6 @@ class AgentGatewayNode(Node):
         self.declare_parameter("amcl_max_yaw_std", math.radians(20.0))
         self.declare_parameter("navigation_goal_clearance", 0.20)
         self.declare_parameter("navigation_max_timeout", 900.0)
-        self.declare_parameter("emergency_lock_topic", "/cmd_vel_emergency_lock")
         self.declare_parameter("agent_cmd_vel_topic", "/cmd_vel_agent")
         self.declare_parameter("nav_cmd_vel_topic", "/cmd_vel_nav")
         self.declare_parameter("command_conflict_window", 0.30)
@@ -120,7 +118,6 @@ class AgentGatewayNode(Node):
         self._map: dict[str, Any] | None = None
         self._amcl_pose: dict[str, Any] | None = None
         self._amcl_pose_at: float | None = None
-        self._emergency_locked = False
         self._source_active_at: dict[str, float | None] = {"agent": None, "nav": None}
         self._history_size = int(self.get_parameter("history_size").value)
         self._action_timeout = float(self.get_parameter("action_timeout").value)
@@ -164,8 +161,10 @@ class AgentGatewayNode(Node):
             "/motion/emergency_stop",
             callback_group=self._callbacks,
         )
-        self._emergency_lock_publisher = self.create_publisher(
-            Bool, str(self.get_parameter("emergency_lock_topic").value), 10
+        self._emergency_lock_client = self.create_client(
+            SetBool,
+            "/motion/set_emergency_lock",
+            callback_group=self._callbacks,
         )
         self.create_subscription(
             Twist,
@@ -181,7 +180,6 @@ class AgentGatewayNode(Node):
             10,
             callback_group=self._callbacks,
         )
-        self.create_timer(0.1, self._publish_emergency_lock)
         self.create_timer(0.2, self._enforce_navigation_timeout)
         self.create_subscription(
             Odometry,
@@ -409,7 +407,7 @@ class AgentGatewayNode(Node):
             self._records[operation_id] = record
             self._active_operation_id = operation_id
             self._active_kind = "navigation"
-            self._emergency_locked = False
+        self._set_mux_lock(False)
         if not self._navigation_client.wait_for_server(timeout_sec=self._action_timeout):
             self._reject_pending(operation_id)
             raise GatewayRejected("UNAVAILABLE", "NavigateToPose 不可用")
@@ -525,8 +523,8 @@ class AgentGatewayNode(Node):
             self._records[operation_id] = record
             self._active_operation_id = operation_id
             self._active_kind = kind
-            self._emergency_locked = False
 
+        self._set_mux_lock(False)
         if not client.wait_for_server(timeout_sec=self._action_timeout):
             self._reject_pending(operation_id)
             raise GatewayRejected("UNAVAILABLE", "运动控制 Action Server 不可用")
@@ -675,7 +673,6 @@ class AgentGatewayNode(Node):
 
     def _stop(self) -> dict[str, Any]:
         with self._lock:
-            self._emergency_locked = True
             active = self._active_operation_id
             goal_handle = None if active is None else self._goal_handles.get(active)
         if goal_handle is not None:
@@ -695,11 +692,18 @@ class AgentGatewayNode(Node):
             time.sleep(0.02)
         return self._read_status()
 
-    def _publish_emergency_lock(self) -> None:
-        message = Bool()
-        with self._lock:
-            message.data = self._emergency_locked
-        self._emergency_lock_publisher.publish(message)
+    def _set_mux_lock(self, locked: bool) -> None:
+        """通过 motion_controller 的锁服务设置 twist_mux 急停锁。"""
+        if not self._emergency_lock_client.wait_for_service(
+            timeout_sec=self._action_timeout
+        ):
+            self.get_logger().error("急停锁服务 /motion/set_emergency_lock 不可用")
+            return
+        request = SetBool.Request()
+        request.data = bool(locked)
+        future = self._emergency_lock_client.call_async(request)
+        if not _wait_future(future, self._action_timeout):
+            self.get_logger().error("设置急停锁超时")
 
     def _enforce_navigation_timeout(self) -> None:
         """即使 Agent 断连，也由 Gateway 取消超时的 Nav2 goal。"""
@@ -721,8 +725,8 @@ class AgentGatewayNode(Node):
                     "error": "导航超过 Gateway 允许时间，已取消并锁止速度输出",
                 }
             )
-            self._emergency_locked = True
             goal_handle = self._goal_handles.get(operation_id or "")
+        self._set_mux_lock(True)
         if goal_handle is not None:
             goal_handle.cancel_goal_async()
 
@@ -743,9 +747,8 @@ class AgentGatewayNode(Node):
                 and now - agent_at <= window
                 and now - nav_at <= window
             )
-            if conflict:
-                self._emergency_locked = True
         if conflict:
+            self._set_mux_lock(True)
             self.get_logger().error(
                 "同时检测到 agent 与 Nav2 非零速度指令，已触发最高优先级锁"
             )
