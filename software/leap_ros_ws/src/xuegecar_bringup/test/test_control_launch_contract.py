@@ -8,6 +8,7 @@ from launch_ros.actions import Node
 
 
 WORKSPACE_SRC = Path(__file__).resolve().parents[2]
+DEFAULT_MAP = '/home/lk/car/data/maps/room_map.yaml'
 
 
 def _launch_description(package: str, filename: str):
@@ -98,6 +99,24 @@ def test_navigation_delegates_mux_and_collision_monitor_to_control_core():
     assert 'twist_mux' not in executables
     assert 'collision_monitor' not in executables
     assert len(_includes(description)) == 1
+
+
+def test_navigation_entry_points_share_the_room_map_default():
+    for package, filename in [
+        ('xuegecar_bringup', 'full_control.launch.py'),
+        ('xuegecar_navigation2', 'navigation2.launch.py'),
+        ('xuegecar_navigation2', 'navigation2_rviz.launch.py'),
+    ]:
+        arguments = _arguments(_launch_description(package, filename))
+        assert _text(arguments['map'].default_value) == DEFAULT_MAP
+
+    legacy_launch = (
+        WORKSPACE_SRC
+        / 'xuegecar_navigation2'
+        / 'launch'
+        / 'slam_nav2.launch.py'
+    ).read_text(encoding='utf-8')
+    assert f"'map', default='{DEFAULT_MAP}'" in legacy_launch
 
 
 def test_web_gui_delegates_mux_to_control_core():

@@ -23,7 +23,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                'map', default_value=str(package_share / 'maps' / 'room.yaml')
+                'map',
+                default_value='/home/lk/car/data/maps/room_map.yaml',
             ),
             DeclareLaunchArgument(
                 'params_file',

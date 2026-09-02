@@ -1,4 +1,4 @@
-/* XuegeCar 遥控前端逻辑：WebSocket 控制 + MJPEG 摄像头 + 摇杆/按键。 */
+/* Web 遥控前端逻辑：WebSocket 控制 + MJPEG 摄像头 + 方向键。 */
 
 (function () {
   "use strict";
@@ -11,13 +11,10 @@
   var retryTimer = null;
   var busy = false;
 
-  var mode = "joystick"; // joystick | dpad
   var maxLinear = 0.3;
   var maxAngular = 1.0;
 
-  var joystickVec = { x: 0, y: 0 }; // 归一化 [-1,1]，y 向下为正
-  var dpadState = { up: false, down: false, left: false, right: false };
-  var keyboardState = { up: false, down: false, left: false, right: false };
+  var activeDirection = null;
 
   // ---------------- DOM ----------------
   var $ = function (id) { return document.getElementById(id); };
@@ -38,6 +35,7 @@
       handleMessage(msg);
     };
     ws.onclose = function (event) {
+      stopMotion(false);
       var wasBusy = busy;
       busy = false;
       cameraImg.src = "";
@@ -144,19 +142,11 @@
 
   // ---------------- 命令合成 ----------------
   function currentCommand() {
-    var linear = 0, angular = 0;
-    if (mode === "joystick") {
-      linear = -joystickVec.y * maxLinear;
-      angular = -joystickVec.x * maxAngular;
-    } else {
-      var up = dpadState.up || keyboardState.up;
-      var down = dpadState.down || keyboardState.down;
-      var left = dpadState.left || keyboardState.left;
-      var right = dpadState.right || keyboardState.right;
-      linear = ((up ? 1 : 0) - (down ? 1 : 0)) * maxLinear;
-      angular = ((left ? 1 : 0) - (right ? 1 : 0)) * maxAngular;
-    }
-    return { linear: linear, angular: angular };
+    if (activeDirection === "up") { return { linear: maxLinear, angular: 0 }; }
+    if (activeDirection === "down") { return { linear: -maxLinear, angular: 0 }; }
+    if (activeDirection === "left") { return { linear: 0, angular: maxAngular }; }
+    if (activeDirection === "right") { return { linear: 0, angular: -maxAngular }; }
+    return { linear: 0, angular: 0 };
   }
 
   function pushCommand() {
@@ -179,91 +169,60 @@
   // 3s 心跳保活：空闲浏览时不被 session_timeout 踢下线。
   setInterval(function () { send({ type: "ping" }); }, 3000);
 
-  // ---------------- 摇杆 ----------------
-  var joystickManager = null;
-  function initJoystick() {
-    var zone = $("joystick-zone");
-    var available = Math.min(zone.clientWidth || 170, zone.clientHeight || 170);
-    var joystickSize = Math.max(88, Math.min(170, available - 16));
-    joystickManager = nipplejs.create({
-      zone: $("joystick"),
-      mode: "static",
-      position: { left: "50%", top: "50%" },
-      size: joystickSize,
-      restJoystick: true,
-      color: "#2f80ed",
-      fadeTime: 80,
-    });
-    var half = joystickSize / 2;
-    joystickManager.on("move", function (evt, data) {
-      joystickVec.x = Math.max(-1, Math.min(1, data.vector.x / half));
-      joystickVec.y = Math.max(-1, Math.min(1, data.vector.y / half));
-    });
-    joystickManager.on("end", function () {
-      joystickVec.x = 0;
-      joystickVec.y = 0;
-    });
-  }
-
-  // ---------------- 按键（多点触控） ----------------
+  // ---------------- 锁存方向键 ----------------
   function bindDpad() {
     var buttons = document.querySelectorAll(".dpad-btn");
-    function setDir(dir, pressed) {
-      if (!(dir in dpadState)) { return; }
-      dpadState[dir] = pressed;
-      var btn = document.querySelector('.dpad-btn[data-dir="' + dir + '"]');
-      if (btn) { btn.classList.toggle("pressed", pressed); }
+    function selectDirection(dir) {
+      activeDirection = dir;
+      buttons.forEach(function (button) {
+        button.classList.toggle("pressed", button.getAttribute("data-dir") === dir);
+      });
+      pushCommand();
     }
     buttons.forEach(function (btn) {
       var dir = btn.getAttribute("data-dir");
       btn.addEventListener("pointerdown", function (e) {
         e.preventDefault();
-        btn.setPointerCapture(e.pointerId);
-        setDir(dir, true);
+        selectDirection(dir);
       });
-      var release = function (e) {
-        e.preventDefault();
-        setDir(dir, false);
-      };
-      btn.addEventListener("pointerup", release);
-      btn.addEventListener("pointercancel", release);
+      // 键盘聚焦按钮后按 Enter/Space 时没有 pointerdown，使用 click 兜底。
+      btn.addEventListener("click", function (e) {
+        if (e.detail === 0) { selectDirection(dir); }
+      });
+      ["contextmenu", "selectstart", "dragstart"].forEach(function (eventName) {
+        btn.addEventListener(eventName, function (e) { e.preventDefault(); });
+      });
     });
+  }
+
+  function stopMotion(forceSend) {
+    var hadActiveCommand = wasNonzero;
+    activeDirection = null;
+    document.querySelectorAll(".dpad-btn").forEach(function (btn) {
+      btn.classList.remove("pressed");
+    });
+    pushCommand();
+    if (forceSend && !hadActiveCommand) { send({ type: "stop" }); }
   }
 
   // ---------------- 键盘（桌面调试） ----------------
   document.addEventListener("keydown", function (e) {
     if (e.repeat) { return; }
     var key = e.key.toLowerCase();
-    if (key === "w" || key === "arrowup") { keyboardState.up = true; }
-    else if (key === "s" || key === "arrowdown") { keyboardState.down = true; }
-    else if (key === "a" || key === "arrowleft") { keyboardState.left = true; }
-    else if (key === "d" || key === "arrowright") { keyboardState.right = true; }
-    else if (key === " ") { send({ type: "stop" }); }
-  });
-  document.addEventListener("keyup", function (e) {
-    var key = e.key.toLowerCase();
-    if (key === "w" || key === "arrowup") { keyboardState.up = false; }
-    else if (key === "s" || key === "arrowdown") { keyboardState.down = false; }
-    else if (key === "a" || key === "arrowleft") { keyboardState.left = false; }
-    else if (key === "d" || key === "arrowright") { keyboardState.right = false; }
-  });
-
-  // ---------------- 标签页 ----------------
-  var tabs = document.querySelectorAll(".tab");
-  tabs.forEach(function (tab) {
-    tab.addEventListener("click", function () {
-      tabs.forEach(function (t) { t.classList.remove("active"); });
-      tab.classList.add("active");
-      mode = tab.getAttribute("data-mode");
-      $("joystick-panel").classList.toggle("hidden", mode !== "joystick");
-      $("dpad-panel").classList.toggle("hidden", mode !== "dpad");
-      // 切换模式时清零另一模式输入。
-      joystickVec.x = joystickVec.y = 0;
-      dpadState.up = dpadState.down = dpadState.left = dpadState.right = false;
-      document.querySelectorAll(".dpad-btn").forEach(function (b) {
-        b.classList.remove("pressed");
+    var dir = null;
+    if (key === "w" || key === "arrowup") { dir = "up"; }
+    else if (key === "s" || key === "arrowdown") { dir = "down"; }
+    else if (key === "a" || key === "arrowleft") { dir = "left"; }
+    else if (key === "d" || key === "arrowright") { dir = "right"; }
+    else if (key === " " || key === "k") { stopMotion(true); }
+    if (dir) {
+      activeDirection = dir;
+      document.querySelectorAll(".dpad-btn").forEach(function (btn) {
+        btn.classList.toggle("pressed", btn.getAttribute("data-dir") === dir);
       });
-    });
+      pushCommand();
+    }
+    if (dir || key === " " || key === "k") { e.preventDefault(); }
   });
 
   // ---------------- 滑条 ----------------
@@ -273,21 +232,33 @@
     linearValue.textContent = maxLinear.toFixed(2);
     angularValue.textContent = maxAngular.toFixed(2);
     send({ type: "speed", max_linear: maxLinear, max_angular: maxAngular });
+    if (activeDirection) { pushCommand(); }
   }
   linearSlider.addEventListener("input", onSlider);
   angularSlider.addEventListener("input", onSlider);
 
   // ---------------- 按钮 ----------------
-  $("btn-stop").addEventListener("click", function () {
-    joystickVec.x = joystickVec.y = 0;
-    dpadState.up = dpadState.down = dpadState.left = dpadState.right = false;
-    send({ type: "stop" });
+  $("btn-stop").addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    stopMotion(true);
+  });
+  $("btn-stop").addEventListener("click", function (e) {
+    if (e.detail === 0) { stopMotion(true); }
+  });
+  ["contextmenu", "selectstart", "dragstart"].forEach(function (eventName) {
+    $("btn-stop").addEventListener(eventName, function (e) { e.preventDefault(); });
   });
   $("btn-estop").addEventListener("click", function () { send({ type: "estop" }); });
   $("btn-unlock").addEventListener("click", function () { send({ type: "unlock" }); });
 
+  // 页面离开或失去焦点时必须清零，避免触点丢失后继续运动。
+  window.addEventListener("blur", function () { stopMotion(true); });
+  window.addEventListener("pagehide", function () { stopMotion(true); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { stopMotion(true); }
+  });
+
   // ---------------- 启动 ----------------
-  initJoystick();
   bindDpad();
   connect();
 })();

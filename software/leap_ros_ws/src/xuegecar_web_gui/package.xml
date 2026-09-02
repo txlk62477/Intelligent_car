@@ -3,7 +3,7 @@
 <package format="3">
   <name>xuegecar_web_gui</name>
   <version>0.1.0</version>
-  <description>XuegeCar web 上位机：浏览器遥控（摇杆/按键）、速度调节、实时摄像头画面。</description>
+  <description>XuegeCar web 上位机：浏览器方向键遥控、速度调节、实时摄像头画面。</description>
   <maintainer email="dev@xuegecar.local">xuegecar</maintainer>
   <license>Apache-2.0</license>
 

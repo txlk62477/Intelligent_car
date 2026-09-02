@@ -42,7 +42,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 'map',
-                default_value=str(package_share / 'maps' / 'room.yaml'),
+                default_value='/home/lk/car/data/maps/room_map.yaml',
                 description='Absolute path to the static map YAML file',
             ),
             DeclareLaunchArgument(

@@ -19,6 +19,7 @@ html, body {
   color: var(--text);
   font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
@@ -45,13 +46,10 @@ main {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 6px 2px 8px;
   gap: 8px;
 }
-.brand { display: flex; align-items: center; gap: 8px; }
-.brand-logo { color: var(--accent); font-size: 26px; font-weight: 800; }
-.brand-name { font-size: 17px; font-weight: 700; }
 .pills { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .pill {
   background: var(--card);
@@ -112,7 +110,7 @@ main {
   color: var(--muted);
 }
 
-/* ---------- 标签页 ---------- */
+/* ---------- 驾驶控制 ---------- */
 .dashboard-bottom {
   min-height: 0;
   display: grid;
@@ -122,40 +120,11 @@ main {
 
 #control-card {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 6px;
 }
 
-.tabs { display: flex; gap: 6px; }
-.tab {
-  flex: 1;
-  padding: 6px 0;
-  border-radius: 8px;
-  border: 1px solid var(--card-border);
-  background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-
 .control-panels, .panel { min-height: 0; height: 100%; }
-.panel.hidden { display: none; }
-
-/* ---------- 摇杆 ---------- */
-#joystick-zone {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 96px;
-  border-radius: 10px;
-  background:
-    radial-gradient(circle at center, rgba(47, 128, 237, 0.08), transparent 65%);
-  border: 1px dashed var(--card-border);
-  touch-action: none;
-}
-#joystick { position: absolute; inset: 0; }
 
 /* ---------- 按键 ---------- */
 .dpad {
@@ -177,11 +146,18 @@ main {
   font-size: 20px;
   cursor: pointer;
   touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 70ms ease, background-color 70ms ease,
+    border-color 70ms ease, box-shadow 70ms ease;
 }
 .dpad-btn:active, .dpad-btn.pressed {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+  transform: scale(0.92);
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.28), inset 0 2px 5px rgba(0, 0, 0, 0.28);
 }
 .dpad-btn[data-dir="up"] { grid-area: 1 / 2; }
 .dpad-btn[data-dir="left"] { grid-area: 2 / 1; }
@@ -197,6 +173,11 @@ main {
   justify-content: center;
   color: var(--muted);
   font-size: 12px;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ---------- 滑条 ---------- */
@@ -251,7 +232,7 @@ input[type="range"] {
 }
 .safety-secondary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 .safety-secondary button {
@@ -271,14 +252,17 @@ input[type="range"] {
   line-height: 1.25;
 }
 
+/* 横屏铺满画面；竖屏继续使用上面的 contain，完整显示原图。 */
+@media (orientation: landscape) {
+  #camera { object-fit: cover; }
+}
+
 @media (orientation: landscape) and (max-height: 600px) {
   body {
     padding-right: max(8px, env(safe-area-inset-right));
     padding-left: max(8px, env(safe-area-inset-left));
   }
   #status-bar { padding: 3px 2px 5px; }
-  .brand-logo { font-size: 20px; }
-  .brand-name { font-size: 14px; }
   .pill { padding: 2px 7px; font-size: 10px; }
 
   /* 手机横屏使用三栏：摄像头、驾驶控制、安全控制。 */
@@ -301,22 +285,19 @@ input[type="range"] {
   .camera-meta { margin-top: 3px; font-size: 10px; }
   #control-card {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 5px;
   }
-  #control-tabs,
   .sliders,
   .control-panels {
     grid-column: 1;
   }
-  #control-tabs { grid-row: 1; }
   .sliders {
-    grid-row: 2;
+    grid-row: 1;
     grid-template-columns: 1fr;
     gap: 2px;
   }
-  .control-panels { grid-row: 3; }
-  #joystick-zone { min-height: 88px; }
+  .control-panels { grid-row: 2; }
   .dpad {
     grid-template-columns: repeat(3, min(8vw, 58px));
     grid-template-rows: repeat(3, min(12vh, 46px));
@@ -332,7 +313,6 @@ input[type="range"] {
 }
 
 @media (orientation: landscape) and (max-height: 600px) and (max-width: 720px) {
-  .brand-name { display: none; }
   main { grid-template-columns: minmax(0, 1fr) minmax(315px, 1.05fr); }
   .dashboard-bottom {
     grid-template-columns: minmax(190px, 1fr) minmax(110px, 0.52fr);
@@ -344,7 +324,6 @@ input[type="range"] {
 @media (orientation: portrait) and (max-width: 520px) {
   body { padding-right: 6px; padding-left: 6px; }
   #status-bar { padding-top: 4px; }
-  .brand-name { display: none; }
   .pills { gap: 3px; }
   .pill { padding: 3px 6px; font-size: 10px; }
   main { grid-template-rows: minmax(150px, 32%) minmax(0, 1fr) auto; gap: 6px; }

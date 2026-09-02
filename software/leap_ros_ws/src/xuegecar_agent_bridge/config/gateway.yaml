@@ -20,7 +20,6 @@ xuegecar_agent_bridge:
     map_topic: "/map"
     map_name: ""
     amcl_pose_topic: "/amcl_pose"
-    amcl_pose_max_age: 2.0
     amcl_max_position_std: 0.25
     amcl_max_yaw_std: 0.349066
     navigation_goal_clearance: 0.20

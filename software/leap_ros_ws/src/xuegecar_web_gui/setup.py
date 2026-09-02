@@ -21,10 +21,6 @@ setup(
                 "xuegecar_web_gui/static/style.css",
             ],
         ),
-        (
-            "lib/" + package_name + "/static/vendor",
-            ["xuegecar_web_gui/static/vendor/nipplejs.min.js"],
-        ),
     ],
     install_requires=["setuptools"],
     entry_points={

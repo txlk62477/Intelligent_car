@@ -4,7 +4,9 @@
   "graphs": {
     "car_agent": "./src/agent/graph.py:graph",
     "relative_motion_workflow": "./src/agent/motion_graph.py:graph",
-    "follow_workflow": "./src/agent/follow_graph.py:graph"
+    "follow_workflow": "./src/agent/follow_graph.py:graph",
+    "map_location_workflow": "./src/agent/location_graph.py:graph",
+    "map_navigation_workflow": "./src/agent/navigation_graph.py:graph"
   },
   "env": ".env",
   "python_version": "3.12",

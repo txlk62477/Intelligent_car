@@ -211,7 +211,7 @@ class WebGuiNode(Node):
                 self._state = "ACTIVE"
                 self._stop_ticks = 0
             else:
-                # 零速命令（摇杆回中/按键全松开）：进入停车连发。
+                # 零速命令（方向键全松开）：进入停车连发。
                 self._state = "STOPPING"
                 self._stop_ticks = _STOP_BURST_TICKS
 

@@ -98,7 +98,6 @@ class AgentGatewayNode(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("map_name", "")
         self.declare_parameter("amcl_pose_topic", "/amcl_pose")
-        self.declare_parameter("amcl_pose_max_age", 2.0)
         self.declare_parameter("amcl_max_position_std", 0.25)
         self.declare_parameter("amcl_max_yaw_std", math.radians(20.0))
         self.declare_parameter("navigation_goal_clearance", 0.20)
@@ -855,9 +854,10 @@ class AgentGatewayNode(Node):
             status, error = "NOT_READY", "尚未收到 OccupancyGrid 地图"
         elif pose is None or pose_age is None:
             status, error = "NOT_READY", "尚未收到 AMCL map-frame 位姿"
-        elif pose_age > float(self.get_parameter("amcl_pose_max_age").value):
-            status, error = "NOT_READY", "AMCL 位姿已过期"
         else:
+            # AMCL may intentionally publish only after movement beyond
+            # update_min_d/update_min_a. A stationary robot can therefore
+            # have a valid, but old, last pose message.
             quality_ok, position_std, yaw_std = pose_quality(
                 pose.pop("covariance"),
                 max_position_std=float(

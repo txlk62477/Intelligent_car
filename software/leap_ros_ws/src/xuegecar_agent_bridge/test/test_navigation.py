@@ -1,10 +1,42 @@
 import math
+import time
+from threading import Lock
+from types import SimpleNamespace
+
+from xuegecar_agent_bridge.node import AgentGatewayNode
 
 from xuegecar_agent_bridge.navigation import (
     goal_has_clearance,
     occupancy_grid_fingerprint,
     pose_quality,
 )
+
+
+def test_static_amcl_pose_remains_usable_after_two_seconds():
+    """静止小车的最后一帧合格 AMCL 位姿不应因时间经过而失效。"""
+    node = object.__new__(AgentGatewayNode)
+    node._lock = Lock()
+    node._map = {"map_id": "sha256:test-map"}
+    node._amcl_pose = {
+        "x": 1.0,
+        "y": 2.0,
+        "yaw": 0.0,
+        "covariance": tuple([0.0] * 36),
+    }
+    node._amcl_pose_at = time.monotonic() - 2.1
+    node._navigation_client = SimpleNamespace(server_is_ready=lambda: True)
+    params = {
+        "amcl_max_position_std": 0.25,
+        "amcl_max_yaw_std": math.radians(20.0),
+        "map_name": "room_map",
+    }
+    node.get_parameter = lambda name: SimpleNamespace(value=params[name])
+
+    result = node._read_navigation_status()
+
+    assert result["status"] == "READY"
+    assert result["error"] is None
+    assert result["pose_age_seconds"] > 2.0
 
 
 def test_map_fingerprint_changes_with_map_content():

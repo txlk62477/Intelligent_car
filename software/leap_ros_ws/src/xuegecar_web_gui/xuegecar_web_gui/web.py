@@ -131,7 +131,11 @@ async def _handle_message(node: WebGuiNode, websocket: WebSocket, raw: str) -> N
 async def _frame_generator(node: WebGuiNode, token: str):
     last_seq = 0
     while node.token_valid(token):
-        frame = node.wait_frame(last_seq, timeout=1.0)
+        # ROS callbacks deliver camera frames from executor threads. Waiting on
+        # the corresponding threading.Event directly here would block
+        # uvicorn's only asyncio loop and freeze HTTP/WebSocket controls while
+        # the camera is slow or disconnected.
+        frame = await asyncio.to_thread(node.wait_frame, last_seq, 1.0)
         if frame is None:
             continue
         jpeg_bytes, last_seq = frame

@@ -16,7 +16,9 @@ def generate_launch_description():
     slam_gmapping_dir = get_package_share_directory('slam_gmapping')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
-    map_yaml_path = LaunchConfiguration('map',default=os.path.join(xuegecar_navigation2_dir,'maps','room.yaml'))
+    map_yaml_path = LaunchConfiguration(
+        'map', default='/home/lk/car/data/maps/room_map.yaml'
+    )
     nav2_param_path = LaunchConfiguration('params_file',default=os.path.join(xuegecar_navigation2_dir,'param','xuegebot.yaml'))
 
     rviz_config_dir = os.path.join(nav2_bringup_dir,'rviz','nav2_default_view.rviz')

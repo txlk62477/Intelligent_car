@@ -7,7 +7,9 @@ from langgraph.pregel import Pregel
 
 from agent.follow_graph import graph as follow_graph
 from agent.graph import SUPERVISOR_PROMPT, graph
+from agent.location_graph import graph as location_graph
 from agent.motion_graph import graph as motion_graph
+from agent.navigation_graph import graph as navigation_graph
 
 
 def test_graph_is_compiled() -> None:
@@ -57,6 +59,48 @@ def test_follow_workflow_is_available_as_standalone_graph() -> None:
     assert set(output_schema["properties"]) == {"follow_result"}
 
 
+def test_location_workflow_is_available_as_standalone_graph() -> None:
+    """地点教学子图应可在 LangGraph Studio 中被独立加载。"""
+    assert isinstance(location_graph, Pregel)
+    assert location_graph.name == "map_location_workflow"
+
+    input_schema = location_graph.get_input_jsonschema()
+    assert input_schema["required"] == [
+        "location_action",
+        "location_label",
+        "location_aliases",
+    ]
+    assert set(input_schema["properties"]) == {
+        "location_action",
+        "location_label",
+        "location_aliases",
+    }
+
+    output_schema = location_graph.get_output_jsonschema()
+    assert output_schema["required"] == ["location_result"]
+    assert set(output_schema["properties"]) == {"location_result"}
+
+
+def test_navigation_workflow_is_available_as_standalone_graph() -> None:
+    """地点导航子图应可在 LangGraph Studio 中被独立加载。"""
+    assert isinstance(navigation_graph, Pregel)
+    assert navigation_graph.name == "map_navigation_workflow"
+
+    input_schema = navigation_graph.get_input_jsonschema()
+    assert input_schema["required"] == [
+        "location_query",
+        "navigation_timeout_seconds",
+    ]
+    assert set(input_schema["properties"]) == {
+        "location_query",
+        "navigation_timeout_seconds",
+    }
+
+    output_schema = navigation_graph.get_output_jsonschema()
+    assert output_schema["required"] == ["navigation_result"]
+    assert set(output_schema["properties"]) == {"navigation_result"}
+
+
 def test_langgraph_studio_registers_all_standalone_graphs() -> None:
     """langgraph.json 应注册三个可独立调试的图（含跟随子图）。"""
     config_path = Path(__file__).resolve().parents[2] / "langgraph.json"
@@ -66,6 +110,8 @@ def test_langgraph_studio_registers_all_standalone_graphs() -> None:
     assert graphs["car_agent"].endswith("graph.py:graph")
     assert graphs["relative_motion_workflow"].endswith("motion_graph.py:graph")
     assert graphs["follow_workflow"].endswith("follow_graph.py:graph")
+    assert graphs["map_location_workflow"].endswith("location_graph.py:graph")
+    assert graphs["map_navigation_workflow"].endswith("navigation_graph.py:graph")
 
 
 def test_supervisor_prompt_defines_routing_and_limits() -> None:

@@ -2,7 +2,7 @@
 
 XuegeCar **Web 上位机**（ROS2 节点 + 浏览器页面）。手机连同一局域网，浏览器输入 `http://<主机IP>:8000` 即可遥控小车。
 
-第一阶段功能：摇杆/按键遥控、速度调节、实时摄像头画面、状态显示（速度/电池/摄像头）。
+第一阶段功能：点击方向键锁存遥控、速度调节、实时摄像头画面、状态显示（速度/电池/摄像头）。
 
 ## 与 Qt 上位机（xuegecar_qt_gui）的关系
 
@@ -11,7 +11,7 @@ XuegeCar **Web 上位机**（ROS2 节点 + 浏览器页面）。手机连同一�
 | | xuegecar_qt_gui | xuegecar_web_gui |
 |---|---|---|
 | 界面 | 桌面 Qt 窗口 | 手机/桌面浏览器 |
-| 控制输入 | 键盘 W/S/A/D + 屏幕按钮 | 虚拟摇杆 + 上下左右按键（标签页切换） |
+| 控制输入 | 键盘 W/S/A/D + 屏幕按钮 | 点击上下左右方向键持续运动，中间按钮停止 |
 | 速度调节 | 线速度/角速度两个 SpinBox | 两个滑条（默认值与范围一致） |
 | 摄像头 | QImage 解码显示 | 后端 MJPEG 流，页面 `<img>` 显示 |
 | 速度发布 | 直接发 `/cmd_vel` | 发 `/cmd_vel_teleop`，走 twist_mux 速度仲裁 |
@@ -118,4 +118,4 @@ ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_twist_mux:=false
 
 ## 方向约定
 
-摇杆上 = 前进；摇杆左 = 左转（`angular.z > 0`），与 `xuegecar_motion_controller` 注释约定一致。
+上方向键 = 前进；左方向键 = 原地左转（`angular.z > 0`），与 `xuegecar_motion_controller` 注释约定一致。点击方向键后以 10Hz 持续发送命令，再次选择其他方向会立即切换；中间“停止”按钮停车。
