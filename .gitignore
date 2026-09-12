@@ -31,7 +31,7 @@ artifacts/
 
 # Private resume files
 /简历/
-
+/面试回答/
 # Local experiment data and bags
 /data/
 /test/

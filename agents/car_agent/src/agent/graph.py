@@ -7,7 +7,11 @@ from functools import lru_cache
 
 from langchain_deepseek import ChatDeepSeek
 
-from agent.supervisor.graph import SUPERVISOR_PROMPT, build_car_agent_graph
+from agent.supervisor.graph import (
+    FLEXIBLE_AGENT_PROMPT,
+    ROUTER_PROMPT,
+    build_car_agent_graph,
+)
 
 
 @lru_cache(maxsize=1)
@@ -29,4 +33,4 @@ def build_chat_model() -> ChatDeepSeek:
 
 graph = build_car_agent_graph(model_factory=build_chat_model)
 
-__all__ = ["SUPERVISOR_PROMPT", "build_chat_model", "graph"]
+__all__ = ["FLEXIBLE_AGENT_PROMPT", "ROUTER_PROMPT", "build_chat_model", "graph"]

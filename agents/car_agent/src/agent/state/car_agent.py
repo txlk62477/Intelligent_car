@@ -60,6 +60,10 @@ class CarAgentState(MessagesState):
 
     # 对话上下文由 MessagesState 提供 messages 字段，保存用户、AI 和 Tool 消息。
 
+    # 路由循环编排：本回合已执行的子图/急停步数，用于防止路由模型无限循环。
+    # load_memory 在每个新回合开始时复位为 0。
+    router_steps: NotRequired[int]
+
     # Agent Server Store 长期记忆；公共输出 Schema 不暴露这些内部字段。
     memory_user_id: NotRequired[str]
     memory_robot_id: NotRequired[str]

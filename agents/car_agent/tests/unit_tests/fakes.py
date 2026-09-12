@@ -225,6 +225,8 @@ class FailingRobotGateway(FakeRobotGateway):
 class FakeChatModel:
     """按队列返回预置消息的可编程 Chat Model。"""
 
+    _llm_type = "fake-chat"
+
     def __init__(self, responses: list[BaseMessage] | None = None) -> None:
         self._responses = list(responses or [])
         self.calls: list[list[BaseMessage]] = []
@@ -235,11 +237,19 @@ class FakeChatModel:
         tools: list[Any],
         *,
         parallel_tool_calls: bool = False,
+        tool_choice: Any = None,
+        **kwargs: Any,
     ) -> FakeChatModel:
         self.bound_tools = list(tools)
         return self
 
-    async def ainvoke(self, messages: list[BaseMessage]) -> BaseMessage:
+    def with_retry(self, *args: Any, **kwargs: Any) -> FakeChatModel:
+        """SummarizationMiddleware 会包装摘要模型；测试用返回自身即可。"""
+        return self
+
+    async def ainvoke(
+        self, messages: list[BaseMessage], config: Any = None, **kwargs: Any
+    ) -> BaseMessage:
         self.calls.append(list(messages))
         if not self._responses:
             return AIMessage(content="（没有更多预设回复）")
