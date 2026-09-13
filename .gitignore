@@ -36,6 +36,8 @@ artifacts/
 /data/
 /test/
 /bags/
+# 录制产物直接落在工作空间根目录时同样忽略
+/software/leap_ros_ws/web_control_*/
 
 # Local authentication material
 /software/leap_ros_ws/token.txt
