@@ -77,6 +77,7 @@ def test_control_core_owns_one_mux_and_optional_collision_monitor():
 
     collision_node = nodes[executables.index('collision_monitor')]
     assert collision_node.condition is not None
+    assert _text(collision_node.node_package) == 'xuegecar_bringup'
 
     arguments = _arguments(description)
     assert 'use_collision_monitor' in arguments
@@ -126,6 +127,8 @@ def test_web_gui_delegates_mux_to_control_core():
     executables = [_node_executable(node) for node in _nodes(description)]
 
     assert 'twist_mux' not in executables
+    assert 'launch_control_core' in _arguments(description)
+    assert 'launch_twist_mux' not in _arguments(description)
     assert len(_includes(description)) == 2  # control core plus optional camera
 
 
@@ -135,5 +138,4 @@ def test_full_control_includes_core_once_and_disables_nested_owners():
 
     assert len(includes) == 4
     include_arguments = [_include_arguments(include) for include in includes]
-    assert sum(args.get('launch_control_core') == 'false' for args in include_arguments) == 2
-    assert sum(args.get('launch_twist_mux') == 'false' for args in include_arguments) == 1
+    assert sum(args.get('launch_control_core') == 'false' for args in include_arguments) == 3

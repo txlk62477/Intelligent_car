@@ -24,6 +24,9 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.clock import Clock
+from rclpy.clock_type import ClockType
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
@@ -34,7 +37,7 @@ from std_msgs.msg import Float32
 from std_srvs.srv import SetBool
 from std_srvs.srv import Trigger
 
-_STOP_BURST_TICKS = 5  # 零速连发帧数（10Hz 下约 0.5s，与 twist_mux manual 超时对齐）
+_STOP_BURST_TICKS = 5  # 停车后短暂连发零速，再静默释放手动仲裁
 
 
 class WebGuiNode(Node):
@@ -52,8 +55,8 @@ class WebGuiNode(Node):
         self.declare_parameter("voltage_topics", ["/voltage", "/battery_voltage"])
         self.declare_parameter("percent_topics", ["/battery_percent"])
         self.declare_parameter("cmd_vel_topic", "/cmd_vel_teleop")
-        self.declare_parameter("publish_rate_hz", 10.0)
-        self.declare_parameter("command_timeout", 0.3)
+        self.declare_parameter("publish_rate_hz", 40.0)
+        self.declare_parameter("command_timeout", 0.1)
         self.declare_parameter("session_timeout", 10.0)
         self.declare_parameter("max_linear_cap", 2.0)
         self.declare_parameter("max_angular_cap", 5.0)
@@ -77,6 +80,8 @@ class WebGuiNode(Node):
         self._cmd_linear = 0.0
         self._cmd_angular = 0.0
         self._last_cmd_mono = 0.0
+        self._command_expires_mono = 0.0
+        self._next_publish_mono = 0.0
         self._state = "IDLE"          # ACTIVE | STOPPING | IDLE
         self._stop_ticks = 0
         self._max_linear = float(self.get_parameter("default_max_linear").value)
@@ -96,6 +101,7 @@ class WebGuiNode(Node):
             "token": "",
             "owner_ip": "",
             "last_activity": 0.0,
+            "lease_deadline": 0.0,
         }
 
         # ---- ROS 发布 ----
@@ -142,7 +148,18 @@ class WebGuiNode(Node):
 
         # ---- 控制定时器（发布状态机 + 看门狗 + 动作队列）----
         self._period = 1.0 / max(1.0, self.publish_rate_hz)
-        self._timer = self.create_timer(self._period, self._control_tick)
+        # 安全时钟不依赖 /clock；独立回调组避免图像或服务等待占住停车循环。
+        self._safety_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self._control_group = MutuallyExclusiveCallbackGroup()
+        self._action_group = MutuallyExclusiveCallbackGroup()
+        self._timer = self.create_timer(
+            min(self._period, 0.01), self._control_tick,
+            clock=self._safety_clock, callback_group=self._control_group,
+        )
+        self._action_timer = self.create_timer(
+            0.05, self._action_tick,
+            clock=self._safety_clock, callback_group=self._action_group,
+        )
 
         self.get_logger().info(
             f"web_gui ready: http://{self.host}:{self.port} "
@@ -168,6 +185,7 @@ class WebGuiNode(Node):
                     "token": token,
                     "owner_ip": owner_ip,
                     "last_activity": time.monotonic(),
+                    "lease_deadline": 0.0,
                 }
             )
             return token, None
@@ -199,21 +217,36 @@ class WebGuiNode(Node):
 
     # ------------------------------------------------------------ 控制入口（Web 线程调用）
 
-    def set_command(self, linear: float, angular: float) -> None:
+    def set_command(self, linear: float, angular: float, lease_deadline: float) -> bool:
+        """仅接受服务器签发且未到期的租期；收包时间不能给旧命令续租。"""
         linear = self._clamp(linear, self.max_linear_cap)
         angular = self._clamp(angular, self.max_angular_cap)
+        try:
+            deadline = float(lease_deadline)
+        except (TypeError, ValueError):
+            return False
         with self._lock:
+            now = time.monotonic()
+            if (not self._session["active"] or self._estop_locked
+                    or not math.isfinite(deadline)
+                    or deadline <= now
+                    or deadline > self._session["lease_deadline"]
+                    or deadline > now + self.command_timeout):
+                return False
+            was_active = self._state == "ACTIVE"
             self._cmd_linear = linear
             self._cmd_angular = angular
-            self._last_cmd_mono = time.monotonic()
+            self._last_cmd_mono = now
+            # lease_deadline 只检查消息新鲜度；有效续约从接收时起获得完整租期。
+            self._command_expires_mono = now + self.command_timeout
             if linear != 0.0 or angular != 0.0:
-                # 非零命令：立即（重新）进入发布状态。
                 self._state = "ACTIVE"
                 self._stop_ticks = 0
+                if not was_active:
+                    self._next_publish_mono = 0.0
             else:
-                # 零速命令（方向键全松开）：进入停车连发。
-                self._state = "STOPPING"
-                self._stop_ticks = _STOP_BURST_TICKS
+                self._begin_stop_locked()
+            return True
 
     def request_stop(self) -> None:
         with self._lock:
@@ -226,6 +259,8 @@ class WebGuiNode(Node):
 
     def enqueue_estop(self) -> None:
         with self._lock:
+            self._estop_locked = True
+            self._begin_stop_locked()
             self._actions.append({"type": "estop"})
 
     def enqueue_unlock(self) -> None:
@@ -236,6 +271,8 @@ class WebGuiNode(Node):
         """调用方需持有 _lock。零速 + 进入停车连发。"""
         self._cmd_linear = 0.0
         self._cmd_angular = 0.0
+        self._command_expires_mono = 0.0
+        self._next_publish_mono = 0.0
         self._state = "STOPPING"
         self._stop_ticks = _STOP_BURST_TICKS
         self._last_cmd_mono = time.monotonic()
@@ -244,6 +281,8 @@ class WebGuiNode(Node):
 
     def state_snapshot(self) -> dict[str, Any]:
         with self._lock:
+            now = time.monotonic()
+            self._session["lease_deadline"] = now + self.command_timeout
             if self._frame_times:
                 now = time.monotonic()
                 recent = [t for t in self._frame_times if now - t <= 2.0]
@@ -255,6 +294,8 @@ class WebGuiNode(Node):
                 camera_age = -1.0
             return {
                 "type": "state",
+                "lease_deadline": self._session["lease_deadline"],
+                "lease_duration_ms": self.command_timeout * 1000.0,
                 "cmd_linear": self._cmd_linear,
                 "cmd_angular": self._cmd_angular,
                 "odom_linear": self._odom_linear,
@@ -319,35 +360,30 @@ class WebGuiNode(Node):
     # ------------------------------------------------------------ 控制循环（ROS 线程）
 
     def _control_tick(self) -> None:
-        now = time.monotonic()
         with self._lock:
-            # 看门狗：ACTIVE 状态下超过 command_timeout 没有新命令 -> 停车连发。
-            if self._state == "ACTIVE" and now - self._last_cmd_mono > self.command_timeout:
-                self._cmd_linear = 0.0
-                self._cmd_angular = 0.0
-                self._state = "STOPPING"
-                self._stop_ticks = _STOP_BURST_TICKS
-
-            publish_cmd = False
-            if self._state == "ACTIVE":
-                publish_cmd = True
-            elif self._state == "STOPPING":
+            now = time.monotonic()
+            if self._state == "ACTIVE" and now >= self._command_expires_mono:
+                self._begin_stop_locked()
+            if self._state == "IDLE" or now < self._next_publish_mono:
+                return
+            if self._next_publish_mono <= now - self._period:
+                self._next_publish_mono = now + self._period
+            else:
+                self._next_publish_mono += self._period
+            if self._state == "STOPPING":
                 self._stop_ticks -= 1
-                publish_cmd = True
                 if self._stop_ticks <= 0:
-                    # 零速连发完毕 -> 静默，释放 twist_mux 仲裁权。
                     self._state = "IDLE"
-
-            linear, angular = self._cmd_linear, self._cmd_angular
-            actions = self._actions
-            self._actions = []
-
-        if publish_cmd:
+            # 发布与状态更新共用锁，避免松手后仍发布之前取出的非零速度。
             msg = Twist()
-            msg.linear.x = linear
-            msg.angular.z = angular
+            msg.linear.x = self._cmd_linear
+            msg.angular.z = self._cmd_angular
             self._cmd_pub.publish(msg)
 
+    def _action_tick(self) -> None:
+        with self._lock:
+            actions = self._actions
+            self._actions = []
         for action in actions:
             if action["type"] == "estop":
                 self._handle_estop()

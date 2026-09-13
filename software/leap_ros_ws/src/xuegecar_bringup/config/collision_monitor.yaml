@@ -9,23 +9,35 @@ collision_monitor:
     source_timeout: 1.0
     stop_pub_timeout: 2.0
     enable_stamped_cmd_vel: false
-    # A static polygon keeps Collision Monitor usable without a running Nav2
-    # costmap. EmergencyStop is the measured body envelope plus 2 cm.
-    polygons: [EmergencyStop, FootprintApproach]
-    EmergencyStop:
+    # The whole body plus 2 cm is a fixed virtual solid, NOT the slowdown zone.
+    # The local monitor permits only slow, straight, receding shallow-overlap
+    # escape. Stop and approach keep checking all other obstacle points.
+    base_shift_correction: true
+    hard_stop_padding: 0.02
+    escape_max_speed: 0.03
+    escape_body_overlap: 0.005
+    escape_odom_timeout: 0.5
+    escape_stopped_linear: 0.04
+    escape_stopped_angular: 0.05
+    command_timeout: 0.3
+    odom_topic: /odometry/filtered
+    polygons: [VirtualStop, FootprintApproach]
+    VirtualStop:
       type: polygon
       points: "[[0.144, 0.0925], [0.144, -0.0925], [-0.0525, -0.0925], [-0.0525, 0.0925]]"
       action_type: stop
       min_points: 3
       visualize: true
-      polygon_pub_topic: emergency_stop_polygon
+      polygon_pub_topic: virtual_stop_polygon
       enabled: true
     FootprintApproach:
       type: polygon
-      points: "[[0.124, 0.0725], [0.124, -0.0725], [-0.0325, -0.0725], [-0.0325, 0.0725]]"
+      points: "[[0.144, 0.0925], [0.144, -0.0925], [-0.0525, -0.0925], [-0.0525, 0.0925]]"
       action_type: approach
-      time_before_collision: 0.3
-      simulation_time_step: 0.05
+      # At 0.3 m/s prediction reaches ~30 cm beyond the virtual solid;
+      # at 0.15 m/s ~15 cm. Speed is limited well BEFORE the 2 cm hard zone.
+      time_before_collision: 1.0
+      simulation_time_step: 0.01
       min_points: 3
       visualize: true
       polygon_pub_topic: footprint_approach_polygon

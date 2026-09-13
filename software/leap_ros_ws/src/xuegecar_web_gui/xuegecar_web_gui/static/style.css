@@ -198,7 +198,7 @@ main {
 #control-card {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 6px;
 }
 
@@ -252,22 +252,55 @@ main {
 .dpad-btn[data-dir="left"] { grid-area: 2 / 1; }
 .dpad-btn[data-dir="right"] { grid-area: 2 / 3; }
 .dpad-btn[data-dir="down"] { grid-area: 3 / 2; }
-.dpad-center {
-  grid-area: 2 / 2;
-  border-radius: 50%;
-  background: var(--card-soft);
+/* ---------- 驾驶模式与摇杆 ---------- */
+.panel[hidden] { display: none; }
+.control-modes { display: flex; gap: 6px; }
+.control-mode {
+  flex: 1;
+  padding: 5px 10px;
   border: 1px solid var(--card-border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  font-size: calc(var(--dpad-size) / 13);
-  line-height: 1;
+  border-radius: 8px;
+  background: var(--card-soft);
+  color: var(--text);
   cursor: pointer;
+}
+.control-mode[aria-pressed="true"] { background: var(--accent); color: #fff; }
+#joystick {
+  width: var(--dpad-size);
+  height: var(--dpad-size);
+  border: 1px solid var(--card-border);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--card-soft), var(--card));
+  position: relative;
+  display: grid;
+  place-items: center;
   touch-action: none;
-  -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
+}
+.joystick-guide {
+  position: absolute;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1;
+  font-size: clamp(10px, 2vh, 16px);
+  pointer-events: none;
+}
+.guide-up { top: 10%; }
+.guide-down { bottom: 10%; }
+.guide-left { left: 7%; }
+.guide-right { right: 7%; }
+#joystick-knob {
+  position: absolute;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
 }
 
 /* ---------- 滑条 ---------- */
@@ -372,7 +405,6 @@ input[type="range"]::-moz-range-thumb {
   border-color: var(--warn);
   color: #111;
 }
-.btn-stop { background: var(--danger); border-color: var(--danger); color: #fff; }
 /* 解锁保持高对比但无填充，视觉上次于急停锁 */
 #safety-card .btn-ghost { background: transparent; color: var(--text); }
 
@@ -523,7 +555,6 @@ input[type="range"]::-moz-range-thumb {
 /* ---------- 无障碍 / 输入方式 ---------- */
 @media (hover: hover) and (pointer: fine) {
   .dpad-btn:hover { background: #33445e; }
-  .dpad-center:hover { color: var(--text); background: #33445e; }
   #btn-estop:hover { background: #a34a0c; }
   #btn-unlock:hover { color: var(--text); border-color: var(--muted); }
 }

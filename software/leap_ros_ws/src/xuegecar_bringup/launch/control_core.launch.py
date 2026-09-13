@@ -44,7 +44,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'use_collision_monitor',
                 default_value='true',
-                description='Filter the selected velocity through Nav2 collision monitor',
+                description='Enable 2 cm virtual body, early TTC slowdown and slow escape',
             ),
             DeclareLaunchArgument(
                 'use_sim_time',
@@ -83,7 +83,7 @@ def generate_launch_description():
                 remappings=[('/cmd_vel_out', mux_output)],
             ),
             Node(
-                package='nav2_collision_monitor',
+                package='xuegecar_bringup',
                 executable='collision_monitor',
                 name='collision_monitor',
                 output='screen',

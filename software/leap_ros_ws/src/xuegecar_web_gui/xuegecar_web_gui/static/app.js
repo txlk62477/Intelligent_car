@@ -4,7 +4,7 @@
   "use strict";
 
   var WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
-  var CMD_PERIOD_MS = 100; // 10Hz，与后端 publish_rate 对应
+  var CMD_PERIOD_MS = 25; // 40Hz，刷新 100ms 租期
 
   var ws = null;
   var token = "";
@@ -15,6 +15,14 @@
   var maxAngular = 1.0;
 
   var activeDirection = null;
+  var activeInput = null;
+  var joystickX = 0, joystickY = 0;
+  var controlMode = "dpad";
+  var estopLocked = false;
+  var leaseDeadline = 0;
+  var leaseReceivedAt = 0;
+  var leaseDurationMs = 100;
+  var lastCommandTick = null;
 
   // ---------------- DOM ----------------
   var $ = function (id) { return document.getElementById(id); };
@@ -36,6 +44,7 @@
     };
     ws.onclose = function (event) {
       stopMotion(false);
+      leaseDeadline = 0;
       var wasBusy = busy;
       busy = false;
       cameraImg.src = "";
@@ -77,6 +86,13 @@
   }
 
   function applyState(state) {
+    if (typeof state.lease_deadline === "number") {
+      leaseDeadline = state.lease_deadline;
+      leaseReceivedAt = performance.now();
+      leaseDurationMs = state.lease_duration_ms || 100;
+    }
+    estopLocked = !!state.estop_locked;
+    if (estopLocked) { stopMotion(false); }
     // 连接状态
     if (state.estop_locked) {
       pillConn.textContent = "急停锁止";
@@ -142,6 +158,9 @@
 
   // ---------------- 命令合成 ----------------
   function currentCommand() {
+    if (activeInput && activeInput.kind === "joystick") {
+      return { linear: -joystickY * maxLinear, angular: -joystickX * maxAngular };
+    }
     if (activeDirection === "up") { return { linear: maxLinear, angular: 0 }; }
     if (activeDirection === "down") { return { linear: -maxLinear, angular: 0 }; }
     if (activeDirection === "left") { return { linear: 0, angular: maxAngular }; }
@@ -153,8 +172,18 @@
     var cmd = currentCommand();
     var nonzero = Math.abs(cmd.linear) > 1e-6 || Math.abs(cmd.angular) > 1e-6;
     if (nonzero) {
+      var now = performance.now();
+      if (!canDrive()) {
+        stopMotion(false);
+        return;
+      }
+      var longPause = lastCommandTick !== null && now - lastCommandTick >= leaseDurationMs;
+      lastCommandTick = now;
+      // 暂时不能续约不等于松手：保留输入、不堆积 cmd，后端租期自行到期。
+      // 浏览器长卡顿后跳过一次刷新，让待处理的松手事件先执行。
+      if (longPause || !canRefreshCommand(now)) { return; }
       wasNonzero = true;
-      send({ type: "cmd", linear: cmd.linear, angular: cmd.angular });
+      send({ type: "cmd", linear: cmd.linear, angular: cmd.angular, lease_deadline: leaseDeadline });
     } else if (wasNonzero) {
       // 松手瞬间：发一次 stop，后端零速连发后静默，释放 twist_mux 仲裁。
       wasNonzero = false;
@@ -164,65 +193,135 @@
   }
 
   var wasNonzero = false;
-  // 10Hz 合成循环：仅在有非零命令时下发。
+  // 40Hz 合成循环：仅在有非零命令时下发。
   setInterval(pushCommand, CMD_PERIOD_MS);
   // 3s 心跳保活：空闲浏览时不被 session_timeout 踢下线。
   setInterval(function () { send({ type: "ping" }); }, 3000);
 
-  // ---------------- 锁存方向键 ----------------
-  function bindDpad() {
-    var buttons = document.querySelectorAll(".dpad-btn");
-    function selectDirection(dir) {
-      activeDirection = dir;
-      buttons.forEach(function (button) {
-        button.classList.toggle("pressed", button.getAttribute("data-dir") === dir);
-      });
-      pushCommand();
-    }
-    buttons.forEach(function (btn) {
-      var dir = btn.getAttribute("data-dir");
-      btn.addEventListener("pointerdown", function (e) {
+  // ---------------- 按住驾驶：只接受一个当前输入 ----------------
+  function canDrive() {
+    return !estopLocked && !busy && ws && ws.readyState === WebSocket.OPEN && !!token;
+  }
+
+  function canRefreshCommand(now) {
+    return !ws.bufferedAmount && leaseDeadline > 0
+      && now - leaseReceivedAt < leaseDurationMs;
+  }
+
+  function selectDirection(dir) {
+    activeDirection = dir;
+    document.querySelectorAll(".dpad-btn").forEach(function (button) {
+      button.classList.toggle("pressed", button.getAttribute("data-dir") === dir);
+    });
+    pushCommand();
+  }
+
+  function bindPointerControl(element, kind, onMove) {
+    element.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      if ((e.button != null && e.button !== 0) || !canDrive() || activeInput) { return; }
+      activeInput = { kind: kind, id: e.pointerId, element: element };
+      try { element.setPointerCapture(e.pointerId); } catch (err) {
+        stopMotion(false);
+        return;
+      }
+      onMove(e);
+    });
+    element.addEventListener("pointermove", function (e) {
+      if (activeInput && activeInput.element === element && activeInput.id === e.pointerId) {
         e.preventDefault();
-        selectDirection(dir);
+        onMove(e);
+      }
+    });
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (name) {
+      element.addEventListener(name, function (e) {
+        if (activeInput && activeInput.element === element && activeInput.id === e.pointerId) {
+          stopMotion(false);
+        }
       });
-      // 键盘聚焦按钮后按 Enter/Space 时没有 pointerdown，使用 click 兜底。
-      btn.addEventListener("click", function (e) {
-        if (e.detail === 0) { selectDirection(dir); }
-      });
-      ["contextmenu", "selectstart", "dragstart"].forEach(function (eventName) {
-        btn.addEventListener(eventName, function (e) { e.preventDefault(); });
+    });
+    ["contextmenu", "selectstart", "dragstart"].forEach(function (name) {
+      element.addEventListener(name, function (e) { e.preventDefault(); });
+    });
+  }
+
+  function bindDpad() {
+    document.querySelectorAll(".dpad-btn").forEach(function (btn) {
+      bindPointerControl(btn, "dpad", function () { selectDirection(btn.getAttribute("data-dir")); });
+      btn.addEventListener("keydown", function (e) {
+        if (e.key !== "Enter" && e.key !== " ") { return; }
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat || !canDrive() || activeInput) { return; }
+        activeInput = { kind: "key", id: e.key.toLowerCase() };
+        selectDirection(btn.getAttribute("data-dir"));
       });
     });
   }
 
+  function moveJoystick(e) {
+    var rect = $("joystick").getBoundingClientRect();
+    var radius = Math.min(rect.width, rect.height) * 0.35;
+    if (radius <= 0) { stopMotion(false); return; }
+    var x = (e.clientX - rect.left - rect.width / 2) / radius;
+    var y = (e.clientY - rect.top - rect.height / 2) / radius;
+    var length = Math.sqrt(x * x + y * y);
+    if (length > 1) { x /= length; y /= length; }
+    // 中心死区避免手指轻微抖动导致爬行。
+    joystickX = Math.abs(x) < 0.08 ? 0 : x;
+    joystickY = Math.abs(y) < 0.08 ? 0 : y;
+    $("joystick-knob").style.transform = "translate(" + (x * radius) + "px, " + (y * radius) + "px)";
+    pushCommand();
+  }
+
   function stopMotion(forceSend) {
     var hadActiveCommand = wasNonzero;
+    var previousInput = activeInput;
+    activeInput = null;
     activeDirection = null;
+    lastCommandTick = null;
+    joystickX = joystickY = 0;
+    $("joystick-knob").style.transform = "translate(0px, 0px)";
     document.querySelectorAll(".dpad-btn").forEach(function (btn) {
       btn.classList.remove("pressed");
     });
     pushCommand();
     if (forceSend && !hadActiveCommand) { send({ type: "stop" }); }
+    if (previousInput && previousInput.element) {
+      try { previousInput.element.releasePointerCapture(previousInput.id); } catch (err) { /* already released */ }
+    }
   }
 
-  // ---------------- 键盘（桌面调试） ----------------
-  document.addEventListener("keydown", function (e) {
-    if (e.repeat) { return; }
-    var key = e.key.toLowerCase();
-    var dir = null;
-    if (key === "w" || key === "arrowup") { dir = "up"; }
-    else if (key === "s" || key === "arrowdown") { dir = "down"; }
-    else if (key === "a" || key === "arrowleft") { dir = "left"; }
-    else if (key === "d" || key === "arrowright") { dir = "right"; }
-    else if (key === " " || key === "k") { stopMotion(true); }
-    if (dir) {
-      activeDirection = dir;
-      document.querySelectorAll(".dpad-btn").forEach(function (btn) {
-        btn.classList.toggle("pressed", btn.getAttribute("data-dir") === dir);
+  document.querySelectorAll(".control-mode").forEach(function (button) {
+    button.addEventListener("click", function () {
+      stopMotion(false);
+      controlMode = button.getAttribute("data-mode");
+      $("dpad-panel").hidden = controlMode !== "dpad";
+      $("joystick-panel").hidden = controlMode !== "joystick";
+      document.querySelectorAll(".control-mode").forEach(function (item) {
+        item.setAttribute("aria-pressed", String(item === button));
       });
-      pushCommand();
+    });
+  });
+
+  // ---------------- 键盘 ----------------
+  var keyDirections = { w: "up", arrowup: "up", s: "down", arrowdown: "down",
+    a: "left", arrowleft: "left", d: "right", arrowright: "right" };
+  document.addEventListener("keydown", function (e) {
+    var key = e.key.toLowerCase();
+    var dir = keyDirections[key];
+    if (!dir || controlMode !== "dpad") { return; }
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) { return; }
+    e.preventDefault();
+    if (e.repeat || !canDrive() || activeInput) { return; }
+    activeInput = { kind: "key", id: key };
+    selectDirection(dir);
+  });
+  document.addEventListener("keyup", function (e) {
+    if (activeInput && activeInput.kind === "key" && activeInput.id === e.key.toLowerCase()) {
+      e.preventDefault();
+      stopMotion(false);
     }
-    if (dir || key === " " || key === "k") { e.preventDefault(); }
   });
 
   // ---------------- 滑条 ----------------
@@ -232,23 +331,17 @@
     linearValue.textContent = maxLinear.toFixed(2);
     angularValue.textContent = maxAngular.toFixed(2);
     send({ type: "speed", max_linear: maxLinear, max_angular: maxAngular });
-    if (activeDirection) { pushCommand(); }
+    if (activeInput) { pushCommand(); }
   }
   linearSlider.addEventListener("input", onSlider);
   angularSlider.addEventListener("input", onSlider);
 
   // ---------------- 按钮 ----------------
-  $("btn-stop").addEventListener("pointerdown", function (e) {
-    e.preventDefault();
-    stopMotion(true);
+  $("btn-estop").addEventListener("click", function () {
+    estopLocked = true;
+    stopMotion(false);
+    send({ type: "estop" });
   });
-  $("btn-stop").addEventListener("click", function (e) {
-    if (e.detail === 0) { stopMotion(true); }
-  });
-  ["contextmenu", "selectstart", "dragstart"].forEach(function (eventName) {
-    $("btn-stop").addEventListener(eventName, function (e) { e.preventDefault(); });
-  });
-  $("btn-estop").addEventListener("click", function () { send({ type: "estop" }); });
   $("btn-unlock").addEventListener("click", function () { send({ type: "unlock" }); });
 
   // 页面离开或失去焦点时必须清零，避免触点丢失后继续运动。
@@ -260,5 +353,6 @@
 
   // ---------------- 启动 ----------------
   bindDpad();
+  bindPointerControl($("joystick"), "joystick", moveJoystick);
   connect();
 })();

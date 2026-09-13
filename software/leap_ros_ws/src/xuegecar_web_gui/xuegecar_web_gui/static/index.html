@@ -45,14 +45,26 @@
           </label>
         </div>
 
+        <div class="control-modes" role="group" aria-label="驾驶模式">
+          <button type="button" class="control-mode" data-mode="dpad" aria-pressed="true">方向键</button>
+          <button type="button" class="control-mode" data-mode="joystick" aria-pressed="false">摇杆</button>
+        </div>
         <div class="control-panels">
           <div id="dpad-panel" class="panel">
             <div class="dpad">
               <button type="button" class="dpad-btn" data-dir="up" aria-label="前进">▲</button>
               <button type="button" class="dpad-btn" data-dir="left" aria-label="左转">◀</button>
-              <button type="button" id="btn-stop" class="dpad-center btn-stop">停止</button>
               <button type="button" class="dpad-btn" data-dir="right" aria-label="右转">▶</button>
               <button type="button" class="dpad-btn" data-dir="down" aria-label="后退">▼</button>
+            </div>
+          </div>
+          <div id="joystick-panel" class="panel" hidden>
+            <div id="joystick" aria-label="摇杆：前后调速度，左右调转向，松手停车">
+              <span class="joystick-guide guide-up" aria-hidden="true">前进</span>
+              <span class="joystick-guide guide-left" aria-hidden="true">左转</span>
+              <span class="joystick-guide guide-right" aria-hidden="true">右转</span>
+              <span class="joystick-guide guide-down" aria-hidden="true">后退</span>
+              <span id="joystick-knob" aria-hidden="true"></span>
             </div>
           </div>
         </div>
@@ -69,7 +81,7 @@
     </div>
 
     <footer id="hint">
-      点击方向键持续行驶，“停止”停车 · 断线或切后台自动停车
+      按住方向键或拖动摇杆行驶，松手停车 · 摇杆斜推走弧线 · 断线或切后台自动停车
     </footer>
   </main>
 

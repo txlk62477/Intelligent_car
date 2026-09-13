@@ -93,7 +93,7 @@ AUDIT_JS = r"""
 
   // 4) 关键控件互相重叠
   const overlaps = [];
-  const keySelectors = [".dpad", "#safety-card", ".sliders", ".camera-meta", "#hint", "#status-bar"];
+  const keySelectors = [".dpad", "#joystick", ".control-modes", "#safety-card", ".sliders", ".camera-meta", "#hint", "#status-bar"];
   const keyEls = keySelectors.map((s) => [s, document.querySelector(s)]).filter(([, e]) => e);
   for (let i = 0; i < keyEls.length; i++) {
     for (let j = i + 1; j < keyEls.length; j++) {
@@ -107,7 +107,7 @@ AUDIT_JS = r"""
 
   // 5) 主要区域的占比，便于判断空间浪费
   const area = {};
-  ["#camera-card", "#control-card", "#safety-card", ".dpad"].forEach((s) => {
+  ["#camera-card", "#control-card", "#safety-card", ".dpad", "#joystick"].forEach((s) => {
     const el = document.querySelector(s);
     if (!el) return;
     const r = el.getBoundingClientRect();

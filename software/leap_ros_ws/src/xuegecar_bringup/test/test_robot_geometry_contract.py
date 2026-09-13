@@ -73,7 +73,7 @@ def test_nav2_costmaps_share_measured_body_footprint():
     assert literal_eval(global_['footprint']) == BODY_FOOTPRINT
 
 
-def test_collision_monitor_has_ttc_approach_and_expanded_hard_stop():
+def test_collision_monitor_has_early_ttc_and_virtual_body_hard_stop():
     params = yaml.safe_load(
         (
             WORKSPACE_SRC
@@ -83,18 +83,22 @@ def test_collision_monitor_has_ttc_approach_and_expanded_hard_stop():
         ).read_text(encoding='utf-8')
     )['collision_monitor']['ros__parameters']
 
-    assert params['polygons'] == ['EmergencyStop', 'FootprintApproach']
+    assert params['polygons'] == ['VirtualStop', 'FootprintApproach']
 
-    stop = params['EmergencyStop']
+    stop = params['VirtualStop']
+    assert stop['type'] == 'polygon'
     assert stop['action_type'] == 'stop'
+    assert stop['min_points'] == 3
     assert literal_eval(stop['points']) == STOP_FOOTPRINT
+    assert params['escape_max_speed'] == 0.03
+    assert params['hard_stop_padding'] == 0.02
 
     approach = params['FootprintApproach']
     assert approach['type'] == 'polygon'
     assert approach['action_type'] == 'approach'
-    assert literal_eval(approach['points']) == BODY_FOOTPRINT
-    assert approach['time_before_collision'] == 0.3
-    assert approach['simulation_time_step'] == 0.05
+    assert literal_eval(approach['points']) == STOP_FOOTPRINT
+    assert approach['time_before_collision'] == 1.0
+    assert approach['simulation_time_step'] == 0.01
 
 
 def test_urdf_is_the_only_sensor_static_tf_authority():

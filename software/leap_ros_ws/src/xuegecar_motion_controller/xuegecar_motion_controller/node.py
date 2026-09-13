@@ -47,7 +47,7 @@ MOTION_TERMINAL = {
 
 
 class MotionControllerNode(Node):
-    """唯一发布 `/cmd_vel` 的任务执行节点。"""
+    """发布 Agent 速度并执行运动与视觉跟随任务。"""
 
     def __init__(self) -> None:
         super().__init__("xuegecar_motion_controller")
@@ -115,7 +115,6 @@ class MotionControllerNode(Node):
         self._emergency_lock_publisher = self.create_publisher(
             Bool, emergency_lock_topic, 10
         )
-        self.create_timer(0.1, self._publish_mux_lock)
         self.create_subscription(
             Odometry,
             odom_topic,
@@ -410,12 +409,13 @@ class MotionControllerNode(Node):
             if self._follow is not None:
                 self._follow.cancel(now, "收到急停请求")
         self._publish_stop_burst()
+        self._publish_mux_lock()
         response.success = True
         response.message = "已取消当前任务并锁止速度仲裁"
         return response
 
     def _publish_mux_lock(self) -> None:
-        """向 twist_mux 发布急停锁心跳（10Hz）；停止发布超过看门狗超时即锁止。"""
+        """在显式急停或设置锁状态时向 twist_mux 发布，无定时心跳。"""
         message = Bool()
         with self._lock:
             message.data = self._mux_locked
@@ -427,6 +427,7 @@ class MotionControllerNode(Node):
         """外部（Gateway）请求锁止/解除 twist_mux 速度仲裁锁。"""
         with self._lock:
             self._mux_locked = bool(request.data)
+        self._publish_mux_lock()
         response.success = True
         response.message = "已锁止速度仲裁" if request.data else "已解除速度仲裁锁"
         return response

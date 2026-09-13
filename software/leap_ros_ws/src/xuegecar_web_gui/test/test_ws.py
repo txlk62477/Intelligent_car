@@ -29,10 +29,13 @@ async def main():
     except websockets.exceptions.ConnectionClosed as exc:
         print(f"client2: closed code={exc.code} reason={exc.reason}")
 
-    # 客户端 1 持续发 cmd 3 秒（10Hz），然后停止。
-    for _ in range(30):
-        await ws1.send(json.dumps({"type": "cmd", "linear": 0.25, "angular": -0.5}))
-        await asyncio.sleep(0.1)
+    # 客户端 1 持续发 cmd 3 秒（40Hz），然后停止。
+    deadline = asyncio.get_running_loop().time() + 3.0
+    state = welcome["state"]
+    while asyncio.get_running_loop().time() < deadline:
+        await ws1.send(json.dumps({"type": "cmd", "linear": 0.25, "angular": -0.5,
+                                  "lease_deadline": state["lease_deadline"]}))
+        state = json.loads(await ws1.recv())
     await ws1.send(json.dumps({"type": "stop"}))
     print("client1: sent cmd 3s (0.25, -0.5), then stop")
 

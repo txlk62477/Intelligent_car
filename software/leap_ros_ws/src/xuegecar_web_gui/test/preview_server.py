@@ -41,6 +41,7 @@ class MockState:
         self.camera = camera
         self.battery = battery
         self.estop_locked = estop
+        self.command_expires = 0.0
         self.linear = 0.0
         self.angular = 0.0
         self.max_linear = 0.3
@@ -52,6 +53,8 @@ class MockState:
     def snapshot(self) -> dict:
         """必须与 WebGuiNode.state_snapshot() 的字段（含 type）保持一致。"""
         now = time.monotonic()
+        if now >= self.command_expires:
+            self.linear = self.angular = 0.0
         # 前端把 camera_age < 0 或 > 3s 视为无信号：只有正在推流才算在线。
         if self.camera and self.streams and self.last_frame:
             age: float | None = now - self.last_frame
@@ -59,6 +62,8 @@ class MockState:
             age = -1.0
         return {
             "type": "state",
+            "lease_deadline": now + 0.1,
+            "lease_duration_ms": 100,
             "estop_locked": self.estop_locked,
             "battery_percent": 87.0 if self.battery else None,
             "battery_voltage": 12.34 if self.battery else None,
@@ -140,7 +145,7 @@ def create_app(state: MockState, *, busy: bool) -> FastAPI:
 
         async def push() -> None:
             while True:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.025)
                 try:
                     await websocket.send_json(state.snapshot())
                 except Exception:  # noqa: BLE001
@@ -153,6 +158,9 @@ def create_app(state: MockState, *, busy: bool) -> FastAPI:
                 message = json.loads(raw)
                 kind = message.get("type")
                 if kind == "cmd":
+                    if state.estop_locked or float(message.get("lease_deadline", 0)) <= time.monotonic():
+                        continue
+                    state.command_expires = time.monotonic() + 0.1
                     state.linear = float(message.get("linear", 0.0))
                     state.angular = float(message.get("angular", 0.0))
                 elif kind == "speed":

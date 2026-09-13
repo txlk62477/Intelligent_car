@@ -64,7 +64,7 @@ def create_app(node: WebGuiNode) -> FastAPI:
 
         async def push_state() -> None:
             while True:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.025)
                 if not node.token_valid(token):
                     break
                 try:
@@ -106,6 +106,7 @@ async def _handle_message(node: WebGuiNode, websocket: WebSocket, raw: str) -> N
         node.set_command(
             float(message.get("linear", 0.0)),
             float(message.get("angular", 0.0)),
+            message.get("lease_deadline"),
         )
     elif msg_type == "speed":
         node.set_speed_limits(

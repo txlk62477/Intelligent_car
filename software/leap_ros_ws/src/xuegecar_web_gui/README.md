@@ -2,7 +2,7 @@
 
 XuegeCar **Web 上位机**（ROS2 节点 + 浏览器页面）。手机连同一局域网，浏览器输入 `http://<主机IP>:8000` 即可遥控小车。
 
-第一阶段功能：点击方向键锁存遥控、速度调节、实时摄像头画面、状态显示（速度/电池/摄像头）。
+第一阶段功能：按住方向键／摇杆遥控、速度调节、实时摄像头画面、状态显示（速度/电池/摄像头）。
 
 界面为横竖屏双形态自适应：竖屏单列（摄像头 / 滑条 / 方向键 / 安全按钮），横屏双列
 （左侧摄像头 + 右侧控制栏），旋转屏幕即时重排。详见[界面布局](#界面布局横竖屏适配)。
@@ -14,7 +14,7 @@ XuegeCar **Web 上位机**（ROS2 节点 + 浏览器页面）。手机连同一�
 | | xuegecar_qt_gui | xuegecar_web_gui |
 |---|---|---|
 | 界面 | 桌面 Qt 窗口 | 手机/桌面浏览器 |
-| 控制输入 | 键盘 W/S/A/D + 屏幕按钮 | 点击上下左右方向键持续运动，中间按钮停止 |
+| 控制输入 | 键盘 W/S/A/D + 屏幕按钮 | 按住方向键运动，松开停车；摇杆支持弧线行驶 |
 | 速度调节 | 线速度/角速度两个 SpinBox | 两个滑条（默认值与范围一致） |
 | 摄像头 | QImage 解码显示 | 后端 MJPEG 流，页面 `<img>` 显示 |
 | 速度发布 | 直接发 `/cmd_vel` | 发 `/cmd_vel_teleop`，走 twist_mux 速度仲裁 |
@@ -37,18 +37,25 @@ XuegeCar **Web 上位机**（ROS2 节点 + 浏览器页面）。手机连同一�
 /cmd_vel_agent   (agent,  优先级 150, motion_controller 发布)
 /cmd_vel_nav     (nav,    优先级 100, Nav2 发布)
         └── twist_mux ──> /cmd_vel_selected ──> collision_monitor ──> /cmd_vel ──> micro-ROS ──> ESP32 底盘
-急停锁: /cmd_vel_emergency_lock (优先级 255, 10Hz 心跳看门狗，心跳停=mux 锁死)
+急停锁: /cmd_vel_emergency_lock (优先级 255，仅显式急停/解锁时发布，无心跳超时锁止)
 ```
+
+碰撞监控使用 `/scan_ts` 和现有 TF，将障碍点转换到 `base_link`。
+直线前进仅在车身前方增加 2 cm 缓冲区，直线后退仅在后方增加 2 cm；
+区域内达到 3 个激光点时停车，反方向安全则允许直线退避。
+车身轮廓始终受保护，旋转和边走边转使用周围 2 cm 保护区；
+同时保留 0.3 s 碰撞时间预测减速。检测区域可通过
+`/directional_stop_polygon` 在 RViz 中查看。
 
 ### 三层安全
 
-1. **后端看门狗**：超过 `command_timeout`(0.3s) 无新命令 -> 自动零速发布；
+1. **后端看门狗**：运动租期 `command_timeout`(0.1s) 到期 -> 自动零速发布；
 2. **twist_mux 输入超时**：`/cmd_vel_teleop` 0.5s 无消息 -> 手动源失效；
-3. **心跳锁死**：control_core 中 Motion Controller 维护解锁心跳，进程死亡 -> 心跳停 -> twist_mux 自动锁死全部速度源。
+3. **显式急停锁**：通过 Motion Controller 服务锁止全部速度源，收到解锁消息前保持锁止；没有定时心跳或失联锁止，正常 Web 遥控不依赖 Motion Controller 心跳。
 
 页面按钮：
 
-- **停止**：立即发零速；
+- **松手停车**：方向按钮／键盘松开、摇杆释放时立即发送停车指令；
 - **急停锁**：调用 `/motion/emergency_stop` 服务锁 twist_mux（导航/Agent 全部停）；
 - **解锁**：调用 `/motion/set_emergency_lock`(false) 解除。
 
@@ -144,7 +151,7 @@ ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py use_collision_monitor:=f
 ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py include_camera:=true camera_url:=http://<相机IP>/stream
 
 # 已有 control_core 时不重复启动
-ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_twist_mux:=false
+ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_control_core:=false
 ```
 
 手机浏览器访问 `http://<主机IP>:8000`。
@@ -157,8 +164,8 @@ ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_twist_mux:=false
 | `camera_topic` | `/camera/image_raw/compressed` | 摄像头压缩图像话题 |
 | `odom_topic` | `/odometry/filtered` | 里程计（实际速度显示） |
 | `cmd_vel_topic` | `/cmd_vel_teleop` | 遥控 Twist 发布话题（twist_mux 手动输入） |
-| `publish_rate_hz` | `10.0` | Twist 发布频率 |
-| `command_timeout` | `0.3` | 后端看门狗超时（秒） |
+| `publish_rate_hz` | `40.0` | Twist 发布频率 |
+| `command_timeout` | `0.1` | 运动租期（秒） |
 | `session_timeout` | `10.0` | 控制会话空闲超时（秒） |
 | `max_linear_cap` / `max_angular_cap` | `2.0` / `5.0` | 滑条硬上限 |
 | `default_max_linear` / `default_max_angular` | `0.3` / `1.0` | 滑条默认值（与 Qt 包一致） |
@@ -170,7 +177,7 @@ ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_twist_mux:=false
 
 | type | 字段 | 说明 |
 |---|---|---|
-| `cmd` | `linear`, `angular` | 速度命令（10Hz 持续发送，空闲发零） |
+| `cmd` | `linear`, `angular`, `lease_deadline` | 速度命令（40Hz 刷新租期，空闲静默） |
 | `speed` | `max_linear`, `max_angular` | 滑条速度上限 |
 | `stop` | - | 立即零速 |
 | `estop` | - | 急停锁 |
@@ -180,4 +187,23 @@ ros2 launch xuegecar_web_gui xuegecar_web_gui.launch.py launch_twist_mux:=false
 
 ## 方向约定
 
-上方向键 = 前进；左方向键 = 原地左转（`angular.z > 0`），与 `xuegecar_motion_controller` 注释约定一致。点击方向键后以 10Hz 持续发送命令，再次选择其他方向会立即切换；中间“停止”按钮停车。
+上方向键 = 前进；左方向键 = 原地左转（`angular.z > 0`），与 `xuegecar_motion_controller` 注释约定一致。按住方向按钮或键盘 W/S/A/D、方向键时以 40Hz 持续发送命令，松开立即停车。可切换到摇杆模式：前后控制线速度、左右控制角速度，斜推同时输出两者以走弧线，松手回中停车；速度上限由滑条设定。普通停止按钮已移除，保留急停锁和解锁。切换模式、触控取消、失去焦点或切后台时也会停车；急停解锁后需重新按住操作。
+
+
+### 运动命令租期
+
+按住方向键或拖动摇杆时，每 25ms 发送运动命令。WebSocket 状态每 25ms
+携带服务器单调时钟签发的 `lease_deadline`（100ms 后到期），前端随 `cmd`
+原样带回。`lease_deadline` 用于验证命令新鲜度，后端拒绝已过期或超过已签发
+期限的命令；接受新鲜有效命令时，从接收时起获得完整 100ms 运动租期。
+这两个期限分开计算，避免往返传输消耗运动租期。旧前端没有租期字段时拒绝
+运动命令，请刷新页面。
+
+松手立即发送 `stop`。即使浏览器卡顿或停车消息未送达，独立 STEADY_TIME
+定时器也会在租期结束后的下一次检查中发零速（默认每 10ms 检查，调度可能
+增加延迟），再短暂连发零速。图像等待仍在线程中执行，急停/解锁服务操作
+采用另一回调组，不占用停车循环。短暂发送积压或新鲜度确认中断时跳过发送，
+保留按住状态；后端没有有效续约时仍自动到期停车，仍按住且恢复新鲜有效
+通信后继续续约。浏览器长卡顿后跳过一次刷新，给待处理的松手事件留出处理
+机会。松手、触控取消、失焦、急停或连接断开时清除输入，松手后恢复通信
+不会重新运动。

@@ -37,7 +37,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'use_collision_monitor',
                 default_value='true',
-                description='Filter all selected velocities for imminent collisions',
+                description='Enable directional 2 cm collision buffers and TTC filtering',
             ),
             DeclareLaunchArgument(
                 'use_sim_time',
@@ -109,7 +109,7 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 _launch_file('xuegecar_web_gui', 'xuegecar_web_gui.launch.py'),
                 launch_arguments={
-                    'launch_twist_mux': 'false',
+                    'launch_control_core': 'false',
                     'include_camera': 'false',
                     'port': LaunchConfiguration('web_port'),
                 }.items(),

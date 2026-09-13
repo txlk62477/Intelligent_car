@@ -1,7 +1,7 @@
 """XuegeCar web 上位机 launch。
 
 独立模式（默认）：包含共享 control_core。
-与完整控制栈同跑：由顶层传 launch_twist_mux:=false，避免重复启动 control_core。
+与完整控制栈同跑：由顶层传 launch_control_core:=false，避免重复启动 control_core。
 """
 
 from pathlib import Path
@@ -22,7 +22,7 @@ def generate_launch_description():
     camera_package_share = get_package_share_directory("xuegecar_camera")
 
     port = LaunchConfiguration("port")
-    launch_twist_mux = LaunchConfiguration("launch_twist_mux")
+    launch_control_core = LaunchConfiguration("launch_control_core")
     include_camera = LaunchConfiguration("include_camera")
 
     return LaunchDescription(
@@ -33,14 +33,14 @@ def generate_launch_description():
                 description="Web 服务端口，手机浏览器访问 http://<主机IP>:<port>",
             ),
             DeclareLaunchArgument(
-                "launch_twist_mux",
+                "launch_control_core",
                 default_value="true",
-                description="兼容参数：独立运行时启动共享 control_core",
+                description="独立运行时启动共享运动控制和方向碰撞保护",
             ),
             DeclareLaunchArgument(
                 "use_collision_monitor",
                 default_value="true",
-                description="在共享 control_core 中启用碰撞过滤",
+                description="在共享 control_core 中启用移动方向 2 cm 碰撞缓冲区",
             ),
             DeclareLaunchArgument(
                 "use_sim_time",
@@ -76,7 +76,7 @@ def generate_launch_description():
                     ),
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
                 }.items(),
-                condition=IfCondition(launch_twist_mux),
+                condition=IfCondition(launch_control_core),
             ),
             Node(
                 package="xuegecar_web_gui",

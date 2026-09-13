@@ -17,5 +17,6 @@ twist_mux:
     locks:
       emergency_stop:
         topic: /cmd_vel_emergency_lock
-        timeout: 0.5
+        # Explicit lock state persists until an unlock message; no heartbeat required.
+        timeout: 0.0
         priority: 255

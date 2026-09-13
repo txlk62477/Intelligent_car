@@ -28,7 +28,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_collision_monitor",
                 default_value="true",
-                description="Enable collision filtering in the shared control core",
+                description="Enable directional 2 cm collision buffers in the shared core",
             ),
             DeclareLaunchArgument(
                 "use_sim_time",
