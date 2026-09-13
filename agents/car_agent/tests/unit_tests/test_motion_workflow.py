@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 import agent.workflows.motion.graph as motion_graph_module
+from agent.common.robot_gateway import RobotGatewayError
 from agent.workflows.motion.graph import build_motion_workflow
 from unit_tests.fakes import FailingRobotGateway, FakeRobotGateway
 
@@ -18,6 +19,12 @@ _CONFIRMED_ACTIONS = [
     {"type": "turn_left", "mode": "angle", "value": 60},
     {"type": "forward", "mode": "distance", "value": 1},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fast_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """轮询间隔降到毫秒级，测试不等待真实时间。"""
+    monkeypatch.setenv("MOTION_POLL_INTERVAL", "0.005")
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +191,8 @@ async def test_workflow_timeout_stops_gateway_and_fails(
     assert gateway.stop_calls == 1
 
 
-async def test_gateway_error_during_poll_stops_and_fails() -> None:
+async def test_gateway_error_during_poll_reports_execution_unknown() -> None:
+    """动作已提交但状态无法确认：不得当作“没有移动”，也不得重提。"""
     gateway = FailingRobotGateway()
     app = _build_app(gateway)
     config: dict[str, Any] = {"configurable": {"thread_id": "motion-6"}}
@@ -192,9 +200,96 @@ async def test_gateway_error_during_poll_stops_and_fails() -> None:
     result = await _run_with_confirmation(
         app, _inputs(_CONFIRMED_ACTIONS), config, confirmed=True
     )
-    assert result["motion_result"]["status"] == "failed"
+
+    assert result["motion_result"]["status"] == "execution_unknown"
+    assert "状态未知" in result["motion_result"]["summary"]
     assert result["motion_result"]["failed_action"]["error_code"] == "UNAVAILABLE"
+    # 状态未知前必须先尽力停车，并保持同一个 operation_id。
     assert gateway.stop_calls == 1
+    assert [item["operation_id"] for item in gateway.submitted] == ["plan-1:0"]
+
+
+async def test_lost_submit_response_recovers_existing_operation_id() -> None:
+    """提交响应丢失但服务端已有记录：按同一 operation_id 查询并继续。"""
+    gateway = FakeRobotGateway(
+        submit_errors=[RobotGatewayError("UNAVAILABLE", "响应丢失")],
+        preloaded_motions={
+            "plan-1:0": {"operation_id": "plan-1:0", "status": "RUNNING"}
+        },
+        poll_scripts={"plan-1:0": [{"status": "SUCCEEDED"}]},
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "motion-8"}}
+
+    result = await _run_with_confirmation(
+        app,
+        _inputs([{"type": "forward", "mode": "distance", "value": 1}]),
+        config,
+        True,
+    )
+
+    assert result["motion_result"]["status"] == "success"
+    assert gateway.submitted == []  # 没有换新 ID 重新提交
+    assert result["motion_result"]["completed_actions"][0]["operation_id"] == "plan-1:0"
+
+
+async def test_submit_without_record_reports_clear_failure() -> None:
+    """提交未确认且 Gateway 查无记录：报告失败，不生成新的 operation_id。"""
+    gateway = FakeRobotGateway(
+        submit_errors=[RobotGatewayError("UNAVAILABLE", "响应丢失")]
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "motion-9"}}
+
+    result = await _run_with_confirmation(
+        app,
+        _inputs([{"type": "forward", "mode": "distance", "value": 1}]),
+        config,
+        True,
+    )
+
+    assert result["motion_result"]["status"] == "failed"
+    failed = result["motion_result"]["failed_action"]
+    assert failed["error_code"] == "SUBMIT_NOT_FOUND"
+    assert "没有该操作记录" in failed["error"]
+    assert gateway.submitted == []
+
+
+async def test_same_plan_id_never_submits_the_same_action_twice() -> None:
+    """同一个 plan_id 重放时 operation_id 不变，Gateway 幂等识别同一次提交。"""
+    gateway = FakeRobotGateway(submit_results=[{"status": "SUCCEEDED"}])
+    app = _build_app(gateway)
+    inputs = _inputs([{"type": "forward", "mode": "distance", "value": 1}])
+    inputs["motion_plan_id"] = "task-1:1"
+
+    first = await _run_with_confirmation(
+        app, inputs, {"configurable": {"thread_id": "motion-replay-a"}}, True
+    )
+    second = await _run_with_confirmation(
+        app, inputs, {"configurable": {"thread_id": "motion-replay-b"}}, True
+    )
+
+    assert first["motion_result"]["status"] == "success"
+    assert second["motion_result"]["status"] == "success"
+    assert [item["operation_id"] for item in gateway.submitted] == ["task-1:1:0"]
+
+
+async def test_cancelled_action_maps_to_cancelled_plan() -> None:
+    gateway = FakeRobotGateway(
+        submit_results=[{"status": "CANCELLED", "error": "收到停止请求"}]
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "motion-10"}}
+
+    result = await _run_with_confirmation(
+        app,
+        _inputs([{"type": "forward", "mode": "distance", "value": 1}]),
+        config,
+        True,
+    )
+
+    assert result["motion_result"]["status"] == "cancelled"
+    assert result["motion_result"]["failed_action"] is None
 
 
 async def test_invalid_plan_is_rejected_before_confirmation() -> None:

@@ -1,13 +1,49 @@
+/* ==========================================================================
+   xuegecar_web_gui — 遥控页样式
+   --------------------------------------------------------------------------
+   布局策略（不再用 vw/vh 魔法数字堆叠断点）：
+
+     竖屏（手机为主）        横屏（手机 / 平板 / 桌面）
+     ┌───────────────┐       ┌──────────────────────┬────────────┐
+     │    状态栏     │       │                      │   状态栏   │
+     ├───────────────┤       ├──────────────────────┤  滑条      │
+     │   摄像头      │       │                      │  方向键    │
+     ├───────────────┤       │      摄像头          │            │
+     │  滑条（两列） │       │                      │  安全按钮  │
+     ├───────────────┤       └──────────────────────┴────────────┘
+     │   方向键      │
+     ├───────────────┤       摄像头恒用 object-fit: contain，
+     │  安全按钮     │       绝不裁切驾驶视野。
+     └───────────────┘
+
+   要点：
+     1. 方向键尺寸由「可用空间」推导（容器查询），在 360x640 到 4K 之间都
+        自动取到最大可用正方形，不会溢出也不会缩成一小撮。
+     2. 触摸目标一律 >= 44px（滑条用透明热区 + 细轨道）。
+     3. 急停/解锁按钮限高，避免被 1fr 行拉成巨型色块。
+     4. 全面使用 dvh + safe-area-inset，适配刘海屏和移动浏览器地址栏。
+   ========================================================================== */
+
 :root {
   --bg: #0f172a;
   --card: #1e293b;
   --card-border: #334155;
+  --card-soft: #273449;
   --text: #e2e8f0;
   --muted: #94a3b8;
   --accent: #2f80ed;
   --danger: #ef4444;
   --warn: #f59e0b;
   --ok: #22c55e;
+
+  --gap: 8px;
+  --pad: 8px;
+  --radius: 14px;
+  --touch: 44px;
+  /* 方向键正方形边长上限；大屏下放宽，避免控制栏中间留一大片空 */
+  --dpad-max: 320px;
+  /* 横屏右侧控制栏宽度 */
+  --rail: clamp(272px, 32vw, 380px);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -17,28 +53,27 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
+  overscroll-behavior: none;
 }
 
 body {
-  height: 100dvh;
+  height: 100vh;   /* 老浏览器回退 */
+  height: 100dvh;  /* 跟随移动端地址栏收放，避免底部按钮被裁掉 */
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: env(safe-area-inset-top) 10px env(safe-area-inset-bottom);
-}
-
-main {
-  min-height: 0;
-  flex: 1;
-  display: grid;
-  grid-template-rows: minmax(120px, 40%) minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: var(--gap);
+  padding:
+    max(6px, env(safe-area-inset-top))
+    max(8px, env(safe-area-inset-right))
+    max(6px, env(safe-area-inset-bottom))
+    max(8px, env(safe-area-inset-left));
 }
 
 /* ---------- 状态栏 ---------- */
@@ -47,16 +82,24 @@ main {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 6px 2px 8px;
   gap: 8px;
+  min-width: 0;
 }
-.pills { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+}
 .pill {
   background: var(--card);
   border: 1px solid var(--card-border);
   border-radius: 999px;
-  padding: 4px 10px;
+  padding: 5px 11px;
   font-size: 12px;
+  line-height: 1.25;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -64,31 +107,53 @@ main {
 .pill.warn { color: var(--warn); border-color: #92400e; }
 .pill.err { color: var(--danger); border-color: #7f1d1d; }
 
-/* ---------- 卡片 ---------- */
+/* ---------- 主区域 ---------- */
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--card-border);
-  border-radius: 14px;
-  padding: 8px;
+  border-radius: var(--radius);
+  padding: var(--pad);
   min-width: 0;
   min-height: 0;
 }
 
 /* ---------- 摄像头 ---------- */
-.camera-card { min-height: 0; }
 #camera-card {
+  /* 竖屏：卡片高度由画面比例决定，空间不足时先压缩自身而不是压垮下方控件 */
+  flex: 0 1 auto;
+  min-height: 128px;
   display: flex;
   flex-direction: column;
+  gap: 4px;
 }
 .camera-wrap {
-  flex: 1;
-  min-height: 0;
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 按典型 4:3 摄像头给画面框，避免出现上下黑边 */
+  aspect-ratio: 4 / 3;
   border-radius: 10px;
   overflow: hidden;
   background: #000;
+  /* 把 MJPEG 流的重绘隔离在画面内部，避免带动整页重排 */
+  contain: layout paint;
 }
-#camera { width: 100%; height: 100%; object-fit: contain; display: block; }
+#camera {
+  width: 100%;
+  height: 100%;
+  /* 驾驶视野一律完整显示，横竖屏都不裁切 */
+  object-fit: contain;
+  display: block;
+}
 #camera-placeholder {
   position: absolute;
   inset: 0;
@@ -96,54 +161,78 @@ main {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 15px;
+  font-size: clamp(13px, 3.6vw, 16px);
   background: #0b1120;
   pointer-events: none;
 }
 #camera-placeholder.hidden { display: none; }
 .camera-meta {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
-  flex: 0 0 auto;
-  margin-top: 5px;
-  font-size: 12px;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1.3;
   color: var(--muted);
 }
+#camera-fps { flex: 0 0 auto; }
+#speed-readout {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-/* ---------- 驾驶控制 ---------- */
+/* ---------- 控制区 + 安全区（竖屏上下排列） ---------- */
 .dashboard-bottom {
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(120px, 0.8fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: var(--gap);
 }
 
 #control-card {
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 6px;
 }
 
-.control-panels, .panel { min-height: 0; height: 100%; }
-
-/* ---------- 按键 ---------- */
-.dpad {
-  height: 100%;
+.control-panels {
+  min-height: 0;
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, min(22vw, 64px));
-  grid-template-rows: repeat(3, min(7vh, 52px));
-  gap: 5px;
-  align-content: center;
-  justify-content: center;
-  padding: 2px 0;
+}
+.panel {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+}
+
+/* ---------- 方向键 ---------- */
+/* 回退值：不支持容器查询时用 vh 估算；下面再用容器查询精确取值。 */
+.panel { --dpad-size: min(100%, 42vh, var(--dpad-max)); }
+.dpad {
+  width: var(--dpad-size);
+  height: var(--dpad-size);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: clamp(4px, calc(var(--dpad-size) * 0.028), 12px);
   touch-action: none;
 }
 .dpad-btn {
-  border-radius: 12px;
+  border-radius: calc(var(--dpad-size) * 0.07);
   border: 1px solid var(--card-border);
-  background: #273449;
+  background: var(--card-soft);
   color: var(--text);
-  font-size: 20px;
+  font-size: calc(var(--dpad-size) / 7.5);
+  line-height: 1;
   cursor: pointer;
   touch-action: none;
   -webkit-touch-callout: none;
@@ -156,7 +245,7 @@ main {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  transform: scale(0.92);
+  transform: scale(0.93);
   box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.28), inset 0 2px 5px rgba(0, 0, 0, 0.28);
 }
 .dpad-btn[data-dir="up"] { grid-area: 1 / 2; }
@@ -166,13 +255,14 @@ main {
 .dpad-center {
   grid-area: 2 / 2;
   border-radius: 50%;
-  background: #273449;
+  background: var(--card-soft);
   border: 1px solid var(--card-border);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(var(--dpad-size) / 13);
+  line-height: 1;
   cursor: pointer;
   touch-action: none;
   -webkit-touch-callout: none;
@@ -184,156 +274,115 @@ main {
 .sliders {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 4px 12px;
+  min-width: 0;
 }
 .sliders label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 6px;
+  min-width: 0;
   font-size: 11px;
   color: var(--muted);
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 1px 6px;
 }
-.sliders label span { color: var(--muted); white-space: nowrap; }
-.sliders label b { color: var(--text); font-weight: 700; }
+.sliders label span { white-space: nowrap; }
+.sliders label b { color: var(--text); font-weight: 700; font-size: 13px; }
+
 input[type="range"] {
   grid-column: 1 / -1;
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  accent-color: var(--accent);
-  height: 20px;
+  height: var(--touch);          /* 触摸热区，不是视觉高度 */
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #0b1120;
+  border: 1px solid var(--card-border);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+}
+input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #0b1120;
+  border: 1px solid var(--card-border);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
 }
 
-/* ---------- 按钮 ---------- */
+/* ---------- 安全按钮 ---------- */
 #safety-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-height: 0;
 }
 .safety-title {
+  display: none;            /* 手机上省掉标题，按钮文案已自解释 */
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  text-align: center;
+}
+.safety-buttons {
+  display: grid;
+  grid-template-columns: 1.45fr minmax(84px, 1fr);
+  gap: 8px;
+  min-width: 0;
 }
 #safety-card button {
-  border-radius: 10px;
+  /* 限高是关键：早期版本用 1fr 行高把急停键拉成了整条巨幅色块 */
+  min-height: 54px;
+  max-height: 88px;
+  border-radius: 12px;
   border: 1px solid var(--card-border);
-  font-size: 14px;
+  font-size: clamp(15px, 4.4vw, 20px);
   font-weight: 700;
   color: var(--text);
   cursor: pointer;
   touch-action: manipulation;
 }
 #btn-estop {
-  width: 100%;
-  min-height: 74px;
-  font-size: clamp(20px, 4vw, 34px) !important;
-  border: 2px solid #f97316 !important;
-  box-shadow: inset 0 0 0 2px rgba(15, 23, 42, 0.4);
+  background: #92400e;
+  border: 2px solid #f97316;
+  box-shadow: inset 0 0 0 2px rgba(15, 23, 42, 0.35);
 }
-.safety-secondary {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
+#btn-estop.locked {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #111;
 }
-.safety-secondary button {
-  min-height: 40px;
-  padding: 7px 3px;
-}
-.btn-stop { background: var(--danger); border-color: var(--danger) !important; color: #fff !important; }
-.btn-warn { background: #92400e; }
-.btn-warn.locked { background: var(--warn); border-color: var(--warn) !important; color: #111 !important; }
-.btn-ghost { background: transparent; color: var(--muted) !important; }
+.btn-stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+/* 解锁保持高对比但无填充，视觉上次于急停锁 */
+#safety-card .btn-ghost { background: transparent; color: var(--text); }
 
+/* ---------- 提示 ---------- */
 #hint {
+  flex: 0 0 auto;
   text-align: center;
-  font-size: 12px;
-  color: #475569;
-  padding: 0 8px;
-  line-height: 1.25;
-}
-
-/* 横屏铺满画面；竖屏继续使用上面的 contain，完整显示原图。 */
-@media (orientation: landscape) {
-  #camera { object-fit: cover; }
-}
-
-@media (orientation: landscape) and (max-height: 600px) {
-  body {
-    padding-right: max(8px, env(safe-area-inset-right));
-    padding-left: max(8px, env(safe-area-inset-left));
-  }
-  #status-bar { padding: 3px 2px 5px; }
-  .pill { padding: 2px 7px; font-size: 10px; }
-
-  /* 手机横屏使用三栏：摄像头、驾驶控制、安全控制。 */
-  main {
-    grid-template-columns: minmax(0, 1.45fr) minmax(330px, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-    gap: 6px;
-  }
-  #camera-card {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .dashboard-bottom {
-    grid-column: 2;
-    grid-row: 1;
-    grid-template-columns: minmax(200px, 1fr) minmax(116px, 0.52fr);
-    gap: 6px;
-  }
-  .card { padding: 6px; border-radius: 10px; }
-  .camera-meta { margin-top: 3px; font-size: 10px; }
-  #control-card {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 5px;
-  }
-  .sliders,
-  .control-panels {
-    grid-column: 1;
-  }
-  .sliders {
-    grid-row: 1;
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
-  .control-panels { grid-row: 2; }
-  .dpad {
-    grid-template-columns: repeat(3, min(8vw, 58px));
-    grid-template-rows: repeat(3, min(12vh, 46px));
-  }
-  #safety-card { gap: 6px; }
-  #btn-estop {
-    min-height: 90px;
-    font-size: clamp(18px, 3vw, 28px) !important;
-  }
-  .safety-secondary { grid-template-columns: 1fr; }
-  .safety-secondary button { min-height: 36px; }
-  #hint { display: none; }
-}
-
-@media (orientation: landscape) and (max-height: 600px) and (max-width: 720px) {
-  main { grid-template-columns: minmax(0, 1fr) minmax(315px, 1.05fr); }
-  .dashboard-bottom {
-    grid-template-columns: minmax(190px, 1fr) minmax(110px, 0.52fr);
-  }
-  .pill { padding-right: 5px; padding-left: 5px; }
-  .camera-meta { font-size: 9px; }
-}
-
-@media (orientation: portrait) and (max-width: 520px) {
-  body { padding-right: 6px; padding-left: 6px; }
-  #status-bar { padding-top: 4px; }
-  .pills { gap: 3px; }
-  .pill { padding: 3px 6px; font-size: 10px; }
-  main { grid-template-rows: minmax(150px, 32%) minmax(0, 1fr) auto; gap: 6px; }
-  .dashboard-bottom { grid-template-columns: minmax(0, 1.75fr) minmax(105px, 0.75fr); gap: 6px; }
-  .card { padding: 6px; }
-  .sliders { grid-template-columns: 1fr; gap: 2px; }
-  .dpad { grid-template-columns: repeat(3, min(15vw, 54px)); grid-template-rows: repeat(3, min(7vh, 48px)); }
-  #btn-estop { min-height: 90px; }
-  .safety-secondary { grid-template-columns: 1fr; }
-  #hint { font-size: 9px; }
+  font-size: 10px;
+  line-height: 1.3;
+  color: #64748b;
 }
 
 /* ---------- 遮罩 ---------- */
@@ -345,9 +394,143 @@ input[type="range"] {
   align-items: center;
   justify-content: center;
   z-index: 100;
+  padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
 }
 .overlay.hidden { display: none; }
-.overlay-box { text-align: center; padding: 32px; }
+.overlay-box { text-align: center; max-width: 420px; }
 .overlay-icon { font-size: 48px; color: var(--warn); }
 #overlay-title { font-size: 20px; font-weight: 700; margin-top: 14px; }
-#overlay-desc { font-size: 14px; color: var(--muted); margin-top: 8px; }
+#overlay-desc { font-size: 14px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+/* ==========================================================================
+   横屏：左侧摄像头 + 右侧控制栏
+   —— 手机、平板、桌面统一走这一套，不再只对 max-height:600px 生效，
+      因此平板/笔记本横屏也不会再出现「整屏宽的摄像头横条」。
+   ========================================================================== */
+@media (orientation: landscape) {
+  body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rail);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--gap);
+  }
+  #status-bar {
+    grid-column: 2;
+    grid-row: 1;
+    justify-content: flex-start;
+  }
+  .pills { justify-content: flex-start; }
+
+  main {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rail);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--gap);
+    min-height: 0;
+  }
+  #camera-card {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 0;
+    height: 100%;
+  }
+  .camera-wrap { aspect-ratio: auto; height: 100%; }
+  .dashboard-bottom {
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  #hint { display: none; }
+}
+
+/* ==========================================================================
+   容器查询：方向键尺寸 = 可用区域里最大的正方形（上限 320px）
+   ========================================================================== */
+@supports (container-type: size) {
+  .control-panels { container-type: size; }
+  .panel { --dpad-size: min(100cqw, 100cqh, var(--dpad-max)); }
+}
+
+/* 大屏：方向键占满控制栏宽度，比例更协调 */
+@media (min-width: 900px) and (min-height: 700px) {
+  :root { --dpad-max: 400px; }
+}
+
+/* ---------- 大屏加料：更大的字号与内边距 ---------- */
+@media (min-width: 700px) {
+  :root { --gap: 10px; --pad: 10px; --radius: 16px; }
+  .pill { font-size: 13px; padding: 6px 13px; }
+  .sliders label { font-size: 12px; }
+  .sliders label b { font-size: 15px; }
+  .camera-meta { font-size: 12px; }
+  #hint { font-size: 11px; }
+  #safety-card button { font-size: 18px; }
+}
+@media (min-width: 700px) and (min-height: 620px) {
+  .safety-title { display: block; }
+}
+
+/* ---------- 竖屏平板/桌面：摄像头别把控制区挤没 ---------- */
+@media (orientation: portrait) and (min-width: 700px) {
+  #camera-card { max-height: 52vh; }
+}
+@media (orientation: portrait) and (min-width: 1000px) {
+  /* 竖屏但很宽的窗口：限宽居中，避免控件被拉得过散 */
+  body { max-width: 900px; margin-inline: auto; }
+}
+
+/* ---------- 矮手机竖屏（如 360x640）：优先保方向键大小 ---------- */
+@media (orientation: portrait) and (max-height: 720px) {
+  :root { --gap: 6px; --pad: 6px; --touch: 40px; --radius: 12px; }
+  .camera-wrap { aspect-ratio: 4 / 3; }
+  #camera-card { max-height: 36vh; }
+  .pill { font-size: 10px; padding: 3px 8px; }
+  .camera-meta { font-size: 10px; }
+  #safety-card button { min-height: 48px; }
+  #hint { font-size: 9px; }
+}
+
+/* ---------- 矮横屏（手机横放）：压缩一切非必要元素 ---------- */
+@media (orientation: landscape) and (max-height: 460px) {
+  :root { --gap: 6px; --pad: 6px; --rail: clamp(268px, 36vw, 320px); }
+  .pill { font-size: 10px; padding: 2px 8px; }
+  .card { border-radius: 10px; }
+  .camera-meta { font-size: 10px; }
+  .sliders label { font-size: 10px; }
+  .sliders label b { font-size: 12px; }
+  #safety-card button { min-height: 46px; font-size: 15px; }
+}
+
+/* ---------- 极矮横屏（如 568x320 的老机型）：保操作区，砍次要信息 ---------- */
+@media (orientation: landscape) and (max-height: 340px) {
+  :root { --gap: 4px; --pad: 5px; --touch: 40px; --rail: clamp(252px, 46vw, 300px); }
+  .camera-meta { display: none; }
+  #status-bar .pill { font-size: 9px; padding: 2px 6px; }
+  .sliders label { font-size: 9px; }
+  .sliders label b { font-size: 11px; }
+  #safety-card button { min-height: 42px; font-size: 14px; }
+}
+
+/* ---------- 高横屏（平板/桌面横放）：纵向有富余，滑条改两行提精度 ---------- */
+@media (orientation: landscape) and (min-height: 700px) {
+  .sliders { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  #safety-card button { min-height: 62px; }
+}
+
+/* ---------- 无障碍 / 输入方式 ---------- */
+@media (hover: hover) and (pointer: fine) {
+  .dpad-btn:hover { background: #33445e; }
+  .dpad-center:hover { color: var(--text); background: #33445e; }
+  #btn-estop:hover { background: #a34a0c; }
+  #btn-unlock:hover { color: var(--text); border-color: var(--muted); }
+}
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

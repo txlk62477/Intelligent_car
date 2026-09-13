@@ -10,20 +10,29 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable, Mapping
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 from uuid import uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from typing_extensions import NotRequired
 
 from agent.common.robot_gateway import (
     RobotGateway,
     RobotGatewayError,
     get_robot_gateway,
 )
-from agent.state.car_agent import CarAgentState, FollowResult
+from agent.state.car_agent import CarAgentState, FollowResult, WorkflowStatus
 from agent.workflows.motion.graph import is_confirmed
+from agent.workflows.recovery import (
+    UNKNOWN_STATUS,
+    best_effort,
+    is_pending,
+    not_submitted_record,
+    recover_submission,
+    unknown_record,
+)
 
 # 跟随 Action 的终态；TIMED_OUT+TASK_TIMEOUT 表示任务按时长正常结束。
 TERMINAL_FOLLOW_STATUSES = {"FAILED", "TIMED_OUT", "CANCELLED", "SUCCEEDED"}
@@ -35,6 +44,8 @@ class FollowWorkflowInput(TypedDict):
 
     follow_target_label: str
     follow_timeout_seconds: float
+    # 由主图按步骤下发：同一个 step_id 恢复时复用同一个 operation_id。
+    follow_plan_id: NotRequired[str]
 
 
 class FollowWorkflowOutput(TypedDict):
@@ -118,7 +129,7 @@ class FollowWorkflowNodes:
         return {"follow_candidates": candidates, "follow_status": "selecting"}
 
     def select(self, state: CarAgentState) -> dict[str, Any]:
-        """中断并展示候选列表；恢复时读取状态中的候选，不重新探测。"""
+        """中断并展示候选列表；选择结果只决定目标，不隐含开始执行。"""
         target = str(state.get("follow_target_label") or "")
         candidates = [dict(item) for item in state.get("follow_candidates", [])]
         hint = str(state.get("follow_error") or "")
@@ -130,10 +141,11 @@ class FollowWorkflowNodes:
             label = str(candidates[index - 1].get("label", "")).strip().lower()
             if not label:
                 return {"follow_status": "failed", "follow_error": "候选列表数据无效"}
+            # 选中候选只确定目标；执行确认由 confirm 节点单独完成。
             return {
                 "follow_target_label": label,
                 "follow_selected_from_list": True,
-                "follow_status": "executing",
+                "follow_status": "awaiting_confirmation",
                 "follow_error": "",
             }
         # 重新检测回到 probe；无效输入停留在 select 并带上提示。
@@ -151,18 +163,25 @@ class FollowWorkflowNodes:
         }
 
     def confirm(self, state: CarAgentState) -> dict[str, Any]:
-        """直接命中的目标在执行前请求一次人工确认。"""
+        """展示最终目标并单独请求执行确认；候选被选中不等于开始执行。"""
         label = str(state.get("follow_target_label") or "")
         timeout = float(state.get("follow_timeout_seconds") or 60.0)
+        selected = bool(state.get("follow_selected_from_list"))
+        prefix = (
+            f"已选择目标 {label}（来自候选列表）。"
+            if selected
+            else f"当前画面已检测到目标 {label}。"
+        )
         answer = interrupt(
             {
                 "type": "confirm_follow_target",
                 "message": (
-                    f"小车将跟踪目标 {label}，最长运行 {timeout:g} 秒。"
+                    f"{prefix}小车将跟踪该目标，最长运行 {timeout:g} 秒。"
                     "请确认周围安全后回复确认，或回复取消。"
                 ),
                 "target_label": label,
                 "timeout_seconds": timeout,
+                "selected_from_list": selected,
                 "confirmation_hint": '回复确认执行，或传入 {"confirmed": true}',
             }
         )
@@ -184,59 +203,17 @@ class FollowWorkflowNodes:
             "timeout_seconds": timeout,
         }
         gateway = self._gateway_factory()
-        submitted = False
         try:
-            current = await asyncio.to_thread(gateway.submit_follow, payload)
-            submitted = True
-            deadline = asyncio.get_running_loop().time() + timeout + self._timeout_grace
-            while str(current.get("status")) not in TERMINAL_FOLLOW_STATUSES:
-                if asyncio.get_running_loop().time() >= deadline:
-                    await asyncio.to_thread(gateway.cancel_follow, operation_id)
-                    current = {
-                        **payload,
-                        "status": "TIMED_OUT",
-                        "error_code": "WORKFLOW_TIMEOUT",
-                        "error": "等待任务终态超时，已取消跟随任务",
-                    }
-                    break
-                await asyncio.sleep(self._poll_interval)
-                current = await asyncio.to_thread(gateway.get_follow, operation_id)
+            current = await self._submit(gateway, payload, operation_id)
+            if is_pending(current, TERMINAL_FOLLOW_STATUSES):
+                current = await self._await_terminal(
+                    gateway, payload, operation_id, current, timeout
+                )
         except asyncio.CancelledError:
-            if submitted:
-                try:
-                    await asyncio.to_thread(gateway.cancel_follow, operation_id)
-                except RobotGatewayError:
-                    pass
+            await best_effort(gateway.cancel_follow, operation_id)
             raise
-        except RobotGatewayError as error:
-            if submitted:
-                try:
-                    await asyncio.to_thread(gateway.cancel_follow, operation_id)
-                except RobotGatewayError:
-                    pass
-            current = {
-                **payload,
-                "status": "FAILED",
-                "error_code": error.code,
-                "error": str(error),
-            }
 
-        status = str(current.get("status"))
-        error_code = str(current.get("error_code") or "")
-        if status == "TIMED_OUT" and error_code == "TASK_TIMEOUT":
-            outcome, message = "success", ""
-        elif status == "SUCCEEDED":
-            outcome, message = "success", ""
-        elif status == "CANCELLED":
-            outcome, message = (
-                "cancelled",
-                str(current.get("error") or "跟随任务被取消"),
-            )
-        else:
-            outcome, message = (
-                "failed",
-                str(current.get("error") or error_code or "跟随任务失败"),
-            )
+        outcome, message = _follow_outcome(current)
         observation = {
             key: current.get(key)
             for key in (
@@ -256,6 +233,67 @@ class FollowWorkflowNodes:
             "follow_observation": observation,
         }
 
+    async def _submit(
+        self, gateway: RobotGateway, payload: dict[str, Any], operation_id: str
+    ) -> dict[str, Any]:
+        """提交跟随任务；提交结果未知时按同一 operation_id 查询真实状态。"""
+        try:
+            return dict(await asyncio.to_thread(gateway.submit_follow, payload))
+        except RobotGatewayError as error:
+            recovery = await asyncio.to_thread(
+                recover_submission,
+                getter=gateway.get_follow,
+                operation_id=operation_id,
+                error=error,
+            )
+            if recovery["resolution"] == "recovered":
+                return dict(recovery["record"] or {})
+            if recovery["resolution"] == "not_found":
+                return not_submitted_record(
+                    payload=payload,
+                    error_code=recovery["error_code"],
+                    error=recovery["error"],
+                )
+            await best_effort(gateway.cancel_follow, operation_id)
+            return unknown_record(
+                operation_id=operation_id,
+                error_code=recovery["error_code"],
+                error=recovery["error"],
+            )
+
+    async def _await_terminal(
+        self,
+        gateway: RobotGateway,
+        payload: dict[str, Any],
+        operation_id: str,
+        current: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        """轮询到终态；等待超时先取消任务，查询失败按状态未知处理。"""
+        deadline = asyncio.get_running_loop().time() + timeout + self._timeout_grace
+        try:
+            while is_pending(current, TERMINAL_FOLLOW_STATUSES):
+                if asyncio.get_running_loop().time() >= deadline:
+                    await best_effort(gateway.cancel_follow, operation_id)
+                    return {
+                        **payload,
+                        "status": "TIMED_OUT",
+                        "error_code": "WORKFLOW_TIMEOUT",
+                        "error": "等待任务终态超时，已取消跟随任务",
+                    }
+                await asyncio.sleep(self._poll_interval)
+                current = dict(
+                    await asyncio.to_thread(gateway.get_follow, operation_id)
+                )
+            return current
+        except RobotGatewayError as error:
+            await best_effort(gateway.cancel_follow, operation_id)
+            return unknown_record(
+                operation_id=operation_id,
+                error_code=str(error.code or "UNAVAILABLE"),
+                error=f"跟随任务已提交但状态无法确认：{error}",
+            )
+
     def finish(self, state: CarAgentState) -> dict[str, FollowResult]:
         """把内部执行状态压缩成 Supervisor 可使用的结构化结果。"""
         status = str(state.get("follow_status", "failed"))
@@ -265,11 +303,16 @@ class FollowWorkflowNodes:
             summary = f"跟随任务已跟踪目标 {label} 至时限并正常结束。"
         elif status == "cancelled":
             summary = f"跟随任务已取消：{state.get('follow_error') or '用户取消'}"
+        elif status == "execution_unknown":
+            summary = (
+                "跟随执行状态未知：任务已提交但无法确认结果。"
+                "请先确认小车状态，不要直接重试。"
+            )
         else:
             summary = f"跟随任务失败：{state.get('follow_error') or '未知错误'}"
         return {
             "follow_result": FollowResult(
-                status=status,
+                status=cast(WorkflowStatus, status),
                 summary=summary,
                 target_label=label,
                 final_observation=dict(observation) if observation else None,
@@ -313,7 +356,7 @@ def build_follow_workflow(
         {
             "probe": "probe",
             "select": "select",
-            "execute": "execute",
+            "confirm": "confirm",
             "finish": "finish",
         },
     )
@@ -342,19 +385,35 @@ def _after_probe(state: CarAgentState) -> Literal["select", "confirm", "finish"]
 
 def _after_select(
     state: CarAgentState,
-) -> Literal["probe", "select", "execute", "finish"]:
+) -> Literal["probe", "select", "confirm", "finish"]:
     status = str(state.get("follow_status"))
     if status == "resolving":
         return "probe"
     if status == "selecting":
         return "select"
-    if status == "executing":
-        return "execute"
+    if status == "awaiting_confirmation":
+        return "confirm"
     return "finish"
 
 
 def _after_confirmation(state: CarAgentState) -> Literal["execute", "finish"]:
     return "execute" if state.get("follow_status") == "executing" else "finish"
+
+
+def _follow_outcome(record: Mapping[str, Any]) -> tuple[str, str]:
+    """把 Gateway 记录归一化为跟随任务终态与说明。"""
+    status = str(record.get("status"))
+    error_code = str(record.get("error_code") or "")
+    # 按用户给定时间正常结束的跟随不是失败。
+    if status == "TIMED_OUT" and error_code == "TASK_TIMEOUT":
+        return "success", ""
+    if status == "SUCCEEDED":
+        return "success", ""
+    if status == "CANCELLED":
+        return "cancelled", str(record.get("error") or "跟随任务被取消")
+    if status == UNKNOWN_STATUS:
+        return UNKNOWN_STATUS, str(record.get("error") or "跟随任务状态未知")
+    return "failed", str(record.get("error") or error_code or "跟随任务失败")
 
 
 def _selection_payload(

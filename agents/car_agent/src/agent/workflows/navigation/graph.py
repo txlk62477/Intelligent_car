@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
+from typing_extensions import NotRequired
 
 from agent.common.robot_gateway import (
     RobotGateway,
@@ -23,9 +24,17 @@ from agent.common.robot_gateway import (
 )
 from agent.memory.identity import resolve_memory_scope
 from agent.memory.locations import LocationStore, MapLocation
-from agent.state.car_agent import CarAgentState, NavigationResult
+from agent.state.car_agent import CarAgentState, NavigationResult, WorkflowStatus
 from agent.workflows.location.graph import _validated_map_pose
 from agent.workflows.motion.graph import is_confirmed
+from agent.workflows.recovery import (
+    UNKNOWN_STATUS,
+    best_effort,
+    is_pending,
+    not_submitted_record,
+    recover_submission,
+    unknown_record,
+)
 
 TERMINAL_NAVIGATION_STATUSES = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"}
 
@@ -35,6 +44,8 @@ class NavigationWorkflowInput(TypedDict):
 
     location_query: str
     navigation_timeout_seconds: float
+    # 由主图按步骤下发：同一个 step_id 恢复时复用同一个 operation_id。
+    navigation_plan_id: NotRequired[str]
 
 
 class NavigationWorkflowOutput(TypedDict):
@@ -195,52 +206,24 @@ class NavigationWorkflowNodes:
         location = MapLocation.model_validate(state.get("location_selected"))
         operation_id = f"nav-{state.get('navigation_plan_id') or uuid4()}"
         timeout = float(state.get("navigation_timeout_seconds") or 300.0)
-        submitted = False
+        payload = {
+            "operation_id": operation_id,
+            "map_id": location.map_id,
+            "pose": location.pose.model_dump(),
+            "timeout_seconds": timeout,
+        }
         try:
-            status = await asyncio.to_thread(gateway.get_navigation_status)
-            map_id, _pose = _validated_map_pose(status)
-            if map_id != location.map_id:
-                raise RobotGatewayError("MAP_CHANGED", "确认期间活动地图发生变化")
-            current = await asyncio.to_thread(
-                gateway.submit_navigation,
-                {
-                    "operation_id": operation_id,
-                    "map_id": location.map_id,
-                    "pose": location.pose.model_dump(),
-                    "timeout_seconds": timeout,
-                },
+            current = await self._submit(
+                gateway, payload, operation_id, location.map_id
             )
-            submitted = True
-            deadline = asyncio.get_running_loop().time() + timeout
-            while str(current.get("status")) not in TERMINAL_NAVIGATION_STATUSES:
-                if asyncio.get_running_loop().time() >= deadline:
-                    await asyncio.to_thread(gateway.cancel_navigation, operation_id)
-                    await asyncio.to_thread(gateway.stop)
-                    current = {
-                        **current,
-                        "status": "TIMED_OUT",
-                        "error_code": "WORKFLOW_TIMEOUT",
-                        "error": "导航超过允许时间，已取消并停车",
-                    }
-                    break
-                await asyncio.sleep(self._poll_interval)
-                current = await asyncio.to_thread(gateway.get_navigation, operation_id)
+            if is_pending(current, TERMINAL_NAVIGATION_STATUSES):
+                current = await self._await_terminal(
+                    gateway, payload, operation_id, current, timeout
+                )
         except asyncio.CancelledError:
-            if submitted:
-                await asyncio.to_thread(gateway.stop)
+            # 运行被外部取消：goal 可能已经下发，先尽力停车再向上抛出取消。
+            await best_effort(gateway.stop)
             raise
-        except RobotGatewayError as error:
-            if submitted:
-                try:
-                    await asyncio.to_thread(gateway.stop)
-                except RobotGatewayError:
-                    pass
-            current = {
-                "operation_id": operation_id,
-                "status": "FAILED",
-                "error_code": error.code,
-                "error": str(error),
-            }
         if runtime.store is not None:
             scope = resolve_memory_scope(config, runtime)
             locations = LocationStore(
@@ -255,15 +238,96 @@ class NavigationWorkflowNodes:
                 location = updated
             except Exception:
                 pass
-        success = str(current.get("status")) == "SUCCEEDED"
+        outcome = _navigation_outcome(current)
         return {
-            "navigation_status": "success" if success else "failed",
+            "navigation_status": outcome,
             "navigation_error": ""
-            if success
+            if outcome == "success"
             else str(current.get("error") or current.get("status")),
             "navigation_operation": dict(current),
             "location_selected": location.model_dump(mode="json"),
         }
+
+    async def _submit(
+        self,
+        gateway: RobotGateway,
+        payload: dict[str, Any],
+        operation_id: str,
+        expected_map_id: str,
+    ) -> dict[str, Any]:
+        """确认后重检地图并提交 goal；提交结果未知时按同一编号查询。"""
+        try:
+            status = await asyncio.to_thread(gateway.get_navigation_status)
+            map_id, _pose = _validated_map_pose(status)
+        except (RobotGatewayError, ValueError) as error:
+            return not_submitted_record(
+                payload=payload,
+                error_code="MAP_CHECK_FAILED",
+                error=f"确认后无法确认当前地图：{error}",
+            )
+        if map_id != expected_map_id:
+            return not_submitted_record(
+                payload=payload,
+                error_code="MAP_CHANGED",
+                error="确认期间活动地图发生变化，已取消本次导航",
+            )
+        try:
+            return dict(await asyncio.to_thread(gateway.submit_navigation, payload))
+        except RobotGatewayError as error:
+            recovery = await asyncio.to_thread(
+                recover_submission,
+                getter=gateway.get_navigation,
+                operation_id=operation_id,
+                error=error,
+            )
+            if recovery["resolution"] == "recovered":
+                return dict(recovery["record"] or {})
+            if recovery["resolution"] == "not_found":
+                return not_submitted_record(
+                    payload=payload,
+                    error_code=recovery["error_code"],
+                    error=recovery["error"],
+                )
+            await best_effort(gateway.stop)
+            return unknown_record(
+                operation_id=operation_id,
+                error_code=recovery["error_code"],
+                error=recovery["error"],
+            )
+
+    async def _await_terminal(
+        self,
+        gateway: RobotGateway,
+        payload: dict[str, Any],
+        operation_id: str,
+        current: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        """轮询到终态；超时先取消并停车，查询失败按状态未知处理。"""
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while is_pending(current, TERMINAL_NAVIGATION_STATUSES):
+                if asyncio.get_running_loop().time() >= deadline:
+                    await best_effort(gateway.cancel_navigation, operation_id)
+                    await best_effort(gateway.stop)
+                    return {
+                        **current,
+                        "status": "TIMED_OUT",
+                        "error_code": "WORKFLOW_TIMEOUT",
+                        "error": "导航超过允许时间，已取消并停车",
+                    }
+                await asyncio.sleep(self._poll_interval)
+                current = dict(
+                    await asyncio.to_thread(gateway.get_navigation, operation_id)
+                )
+            return current
+        except RobotGatewayError as error:
+            await best_effort(gateway.stop)
+            return unknown_record(
+                operation_id=operation_id,
+                error_code=str(error.code or "UNAVAILABLE"),
+                error=f"导航任务已提交但状态无法确认：{error}",
+            )
 
     def finish(self, state: CarAgentState) -> dict[str, NavigationResult]:
         """压缩导航内部状态。"""
@@ -273,12 +337,17 @@ class NavigationWorkflowNodes:
         if status == "success":
             summary = f"已通过 Nav2 到达“{label}”。"
         elif status == "cancelled":
-            summary = "用户未确认，导航任务已取消。"
+            summary = "导航任务已取消。"
+        elif status == "execution_unknown":
+            summary = (
+                "导航执行状态未知：目标已提交但无法确认结果。"
+                "请先确认小车位置，不要直接重试。"
+            )
         else:
             summary = f"导航失败：{state.get('navigation_error') or '未知错误'}"
         return {
             "navigation_result": NavigationResult(
-                status=status,
+                status=cast(WorkflowStatus, status),
                 summary=summary,
                 location=selected if isinstance(selected, dict) else None,
                 final_observation=state.get("navigation_operation"),
@@ -333,6 +402,18 @@ def build_navigation_workflow(
     builder.add_edge("execute", "finish")
     builder.add_edge("finish", END)
     return builder.compile(name=name, checkpointer=checkpointer, store=store)
+
+
+def _navigation_outcome(record: Mapping[str, Any]) -> str:
+    """把 Gateway 记录归一化为导航终态。"""
+    status = str(record.get("status") or "")
+    if status == "SUCCEEDED":
+        return "success"
+    if status == "CANCELLED":
+        return "cancelled"
+    if status == UNKNOWN_STATUS:
+        return UNKNOWN_STATUS
+    return "failed"
 
 
 def _route_status(

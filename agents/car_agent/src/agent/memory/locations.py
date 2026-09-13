@@ -79,6 +79,9 @@ class LocationConflict(ValueError):
     """同一地图中的名称或别名已被其他位置占用。"""
 
 
+_UNSET = object()
+
+
 class LocationStore:
     """隐藏 namespace、别名唯一性、语义召回和使用统计。"""
 
@@ -161,6 +164,22 @@ class LocationStore:
             return None
         return location
 
+    async def get_by_name(self, query: str) -> MapLocation | None:
+        """精确解析名称或别名，不把语义相似结果当成变更对象。"""
+        normalized = normalize_location_name(query)
+        return next(
+            (
+                location
+                for location in await self.list_all()
+                if normalized
+                in {
+                    normalize_location_name(location.label),
+                    *(normalize_location_name(alias) for alias in location.aliases),
+                }
+            ),
+            None,
+        )
+
     async def save(
         self,
         *,
@@ -171,6 +190,7 @@ class LocationStore:
         user_id: str,
         thread_id: str,
         run_id: str,
+        expected: MapLocation | None | object = _UNSET,
     ) -> MapLocation:
         """新增或更新位置，同时强制同图别名唯一。"""
         label = label.strip()
@@ -179,6 +199,10 @@ class LocationStore:
         )
         key = location_key(label)
         existing = await self.get(label)
+        if expected is not _UNSET and existing != expected:
+            raise LocationConflict(
+                "确认期间地点对象发生变化，原确认已作废，请重新选择并确认"
+            )
         claimed = {
             normalize_location_name(label),
             *(normalize_location_name(alias) for alias in aliases),
@@ -215,24 +239,20 @@ class LocationStore:
             created_at=now if existing is None else existing.created_at,
             updated_at=now,
         )
+        if expected is not _UNSET and await self.get(label) != expected:
+            raise LocationConflict(
+                "确认期间地点对象发生变化，原确认已作废，请重新选择并确认"
+            )
         await self._put(key, location)
         return location
 
-    async def delete(self, label: str) -> bool:
+    async def delete(self, label: str, *, expected: MapLocation | None = None) -> bool:
         """删除当前地图的精确位置。"""
-        normalized = normalize_location_name(label)
-        existing = next(
-            (
-                location
-                for location in await self.list_all()
-                if normalized
-                in {
-                    normalize_location_name(location.label),
-                    *(normalize_location_name(alias) for alias in location.aliases),
-                }
-            ),
-            None,
-        )
+        existing = await self.get_by_name(label)
+        if expected is not None and existing != expected:
+            raise LocationConflict(
+                "确认期间地点对象或别名发生变化，原确认已作废，请重新选择并确认"
+            )
         if existing is None:
             return False
         await self._store.adelete(self._namespace, location_key(existing.label))

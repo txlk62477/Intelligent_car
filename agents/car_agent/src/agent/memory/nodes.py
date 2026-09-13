@@ -72,8 +72,6 @@ class MemoryNodes:
             "memory_episodes": [],
             "memory_context": "",
             "memory_load_error": "",
-            # 新回合开始：复位路由循环编排的步数上限。
-            "router_steps": 0,
         }
         if runtime.store is None:
             result["memory_load_error"] = "当前运行环境没有提供 LangGraph Store"

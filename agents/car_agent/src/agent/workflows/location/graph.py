@@ -21,8 +21,8 @@ from agent.common.robot_gateway import (
     get_robot_gateway,
 )
 from agent.memory.identity import resolve_memory_scope
-from agent.memory.locations import LocationStore, MapPose
-from agent.state.car_agent import CarAgentState, LocationResult
+from agent.memory.locations import LocationStore, MapLocation, MapPose
+from agent.state.car_agent import CarAgentState, LocationResult, SimpleStatus
 from agent.workflows.motion.graph import is_confirmed
 
 
@@ -73,16 +73,7 @@ class LocationWorkflowNodes:
             locations = LocationStore(
                 runtime.store, robot_id=scope.robot_id, map_id=map_id
             )
-            matches = await locations.resolve(label)
-            exact = next(
-                (
-                    item
-                    for item in matches
-                    if item.label.strip().lower() == label.lower()
-                    or label.lower() in {alias.lower() for alias in item.aliases}
-                ),
-                None,
-            )
+            exact = await locations.get_by_name(label)
         except (RobotGatewayError, ValueError) as error:
             return {"location_status": "failed", "location_error": str(error)}
         if action == "delete" and exact is None:
@@ -111,7 +102,14 @@ class LocationWorkflowNodes:
         pose = dict(status.get("pose") or {})
         existing = state.get("location_existing")
         if action == "delete":
-            message = f"准备从当前地图删除位置“{label}”，是否确认？"
+            canonical = (
+                str(existing.get("label") or label)
+                if isinstance(existing, dict)
+                else label
+            )
+            message = (
+                f"准备从当前地图删除位置“{canonical}”（请求名称：{label}），是否确认？"
+            )
         else:
             message = (
                 f"准备在地图 {status.get('map_name') or status.get('map_id')} 中记录“{label}”："
@@ -165,8 +163,21 @@ class LocationWorkflowNodes:
             )
             label = str(state.get("location_label") or "")
             action = str(state.get("location_action") or "save")
+            raw_expected = state.get("location_existing")
+            expected = (
+                None
+                if raw_expected is None
+                else MapLocation.model_validate(raw_expected)
+            )
+            resolved = await locations.get_by_name(label)
+            if resolved != expected:
+                raise ValueError(
+                    "确认期间地点对象或别名发生变化，原确认已作废，请重新选择并确认"
+                )
             if action == "delete":
-                deleted = await locations.delete(label)
+                if expected is None:
+                    raise ValueError("删除确认缺少具体地点对象，请重新选择并确认")
+                deleted = await locations.delete(label, expected=expected)
                 if not deleted:
                     raise ValueError("待删除位置已不存在")
                 result_location = None
@@ -176,13 +187,14 @@ class LocationWorkflowNodes:
                     raise ValueError("确认期间小车位置发生明显变化，请重新记录")
                 thread_id, run_id = _execution_ids(runtime)
                 result_location = await locations.save(
-                    label=label,
+                    label=label if expected is None else expected.label,
                     aliases=list(state.get("location_aliases", [])),
                     pose=current_pose,
                     map_name=str(current.get("map_name") or ""),
                     user_id=scope.user_id,
                     thread_id=thread_id,
                     run_id=run_id,
+                    expected=expected,
                 )
         except (RobotGatewayError, ValueError) as error:
             return {"location_status": "failed", "location_error": str(error)}
@@ -198,15 +210,18 @@ class LocationWorkflowNodes:
 
     def finish(self, state: CarAgentState) -> dict[str, LocationResult]:
         """把内部状态压缩成 Supervisor Tool 结果。"""
-        status = str(state.get("location_status") or "failed")
+        raw_status = str(state.get("location_status") or "failed")
         action = str(state.get("location_action") or "save")
         label = str(state.get("location_label") or "")
-        if status == "success":
+        if raw_status == "success":
+            status: SimpleStatus = "success"
             verb = "删除" if action == "delete" else "记录"
             summary = f"已在当前地图{verb}位置“{label}”。"
-        elif status == "cancelled":
+        elif raw_status == "cancelled":
+            status = "cancelled"
             summary = "用户未确认，位置记忆没有变化。"
         else:
+            status = "failed"
             summary = f"位置记忆变更失败：{state.get('location_error') or '未知错误'}"
         return {
             "location_result": LocationResult(

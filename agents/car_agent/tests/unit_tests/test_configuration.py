@@ -1,4 +1,4 @@
-"""Agent 全局配置与图编译检查。"""
+"""Agent 全局配置、提示词约束与图编译检查。"""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 from langgraph.pregel import Pregel
 
 from agent.follow_graph import graph as follow_graph
-from agent.graph import FLEXIBLE_AGENT_PROMPT, ROUTER_PROMPT, graph
+from agent.graph import FLEXIBLE_AGENT_PROMPT, TERMINAL_EXPLANATION_PROMPT, graph
 from agent.location_graph import graph as location_graph
 from agent.motion_graph import graph as motion_graph
 from agent.navigation_graph import graph as navigation_graph
@@ -22,7 +22,7 @@ def test_graph_is_compiled() -> None:
 
     output_schema = graph.get_output_jsonschema()
     assert output_schema["required"] == ["messages"]
-    assert set(output_schema["properties"]) == {"messages"}
+    assert set(output_schema["properties"]) == {"messages", "task_progress"}
 
 
 def test_motion_workflow_is_available_as_standalone_graph() -> None:
@@ -32,7 +32,7 @@ def test_motion_workflow_is_available_as_standalone_graph() -> None:
 
     input_schema = motion_graph.get_input_jsonschema()
     assert input_schema["required"] == ["motion_actions"]
-    assert set(input_schema["properties"]) == {"motion_actions"}
+    assert set(input_schema["properties"]) == {"motion_actions", "motion_plan_id"}
 
     output_schema = motion_graph.get_output_jsonschema()
     assert output_schema["required"] == ["motion_result"]
@@ -52,6 +52,7 @@ def test_follow_workflow_is_available_as_standalone_graph() -> None:
     assert set(input_schema["properties"]) == {
         "follow_target_label",
         "follow_timeout_seconds",
+        "follow_plan_id",
     }
 
     output_schema = follow_graph.get_output_jsonschema()
@@ -94,6 +95,7 @@ def test_navigation_workflow_is_available_as_standalone_graph() -> None:
     assert set(input_schema["properties"]) == {
         "location_query",
         "navigation_timeout_seconds",
+        "navigation_plan_id",
     }
 
     output_schema = navigation_graph.get_output_jsonschema()
@@ -102,7 +104,7 @@ def test_navigation_workflow_is_available_as_standalone_graph() -> None:
 
 
 def test_langgraph_studio_registers_all_standalone_graphs() -> None:
-    """langgraph.json 应注册三个可独立调试的图（含跟随子图）。"""
+    """langgraph.json 应注册全部可独立调试的图（含四个 Workflow）。"""
     config_path = Path(__file__).resolve().parents[2] / "langgraph.json"
     config = json.loads(config_path.read_text())
 
@@ -114,27 +116,24 @@ def test_langgraph_studio_registers_all_standalone_graphs() -> None:
     assert graphs["map_navigation_workflow"].endswith("navigation_graph.py:graph")
 
 
-def test_router_prompt_defines_routing_and_limits() -> None:
-    assert "stop_robot" in ROUTER_PROMPT
-    assert "delegate_to_motion_workflow" in ROUTER_PROMPT
-    assert "delegate_to_follow_workflow" in ROUTER_PROMPT
-    assert "delegate_to_save_location_workflow" in ROUTER_PROMPT
-    assert "delegate_to_navigation_workflow" in ROUTER_PROMPT
-    assert "立即调用 stop_robot" in ROUTER_PROMPT
-    assert "0.05～3" in ROUTER_PROMPT
-    assert "1～180" in ROUTER_PROMPT
-    # 轻量工具与回答规则不在路由提示里，已下沉到灵活 Agent。
-    assert "get_robot_status" not in ROUTER_PROMPT
-    assert "recognize_image" not in ROUTER_PROMPT
-    assert "get_perception_detections" not in ROUTER_PROMPT
-
-
-def test_flexible_agent_prompt_defines_answering_rules() -> None:
-    assert "get_robot_status" in FLEXIBLE_AGENT_PROMPT
-    assert "recognize_image" in FLEXIBLE_AGENT_PROMPT
-    assert "/odometry/filtered" in FLEXIBLE_AGENT_PROMPT
+def test_flexible_agent_prompt_defines_boundaries_and_limits() -> None:
+    assert "request_workflow" in FLEXIBLE_AGENT_PROMPT
+    assert "stop_robot" in FLEXIBLE_AGENT_PROMPT
+    assert "ask_user" in FLEXIBLE_AGENT_PROMPT
+    assert "kind=motion" in FLEXIBLE_AGENT_PROMPT
+    assert "kind=follow" in FLEXIBLE_AGENT_PROMPT
+    assert "save_location" in FLEXIBLE_AGENT_PROMPT
+    assert "delete_location" in FLEXIBLE_AGENT_PROMPT
+    assert "navigation" in FLEXIBLE_AGENT_PROMPT
+    # 数值范围与“不得换算/截断/猜测”的硬约束必须留在提示里。
+    assert "0.05~3" in FLEXIBLE_AGENT_PROMPT
+    assert "1~180" in FLEXIBLE_AGENT_PROMPT
+    assert "不得换算、截断、拆小或猜测缺失数值" in FLEXIBLE_AGENT_PROMPT
+    assert "一次只能调用一个工具" in FLEXIBLE_AGENT_PROMPT
+    assert "观察引用不是执行授权" in FLEXIBLE_AGENT_PROMPT
     assert "局部相对里程计" in FLEXIBLE_AGENT_PROMPT
-    assert "0.27 m/s" in FLEXIBLE_AGENT_PROMPT
-    assert "0.53 rad/s" in FLEXIBLE_AGENT_PROMPT
-    assert "悬空或打滑" in FLEXIBLE_AGENT_PROMPT
-    assert "recognize_image" in FLEXIBLE_AGENT_PROMPT
+
+
+def test_terminal_explanation_prompt_forbids_tools() -> None:
+    assert "不可调用任何工具" in TERMINAL_EXPLANATION_PROMPT
+    assert "operation_id" in TERMINAL_EXPLANATION_PROMPT

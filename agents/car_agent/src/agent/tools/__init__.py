@@ -1,39 +1,32 @@
-"""薄路由与灵活 Agent 的工具集合。"""
+"""Agent 可见工具集合。
 
-from agent.tools.navigation import (
-    delegate_to_delete_location_workflow,
-    delegate_to_navigation_workflow,
-    delegate_to_save_location_workflow,
-)
-from agent.tools.perception import delegate_to_follow_workflow
-from agent.tools.robot import delegate_to_motion_workflow, get_robot_status, stop_robot
+Agent 只有三类能力：只读观察、受限控制请求（编排/澄清/停车）和图片识别。
+任何有副作用的机器人动作都不在这里执行，而是由主图编排入口校验后交给固定
+Workflow。
+"""
+
+from agent.tools.orchestration import ask_user, request_workflow
+from agent.tools.robot import get_robot_status, stop_robot
 from agent.tools.vision import recognize_image
 
-# 固定高成本子图的委派工具。
-DELEGATION_TOOLS = [
-    delegate_to_motion_workflow,
-    delegate_to_follow_workflow,
-    delegate_to_save_location_workflow,
-    delegate_to_navigation_workflow,
-    delegate_to_delete_location_workflow,
+#: Agent 在非终态可调用的全部工具；控制类调用会被中间件截获。
+AGENT_TOOLS = [
+    get_robot_status,
+    recognize_image,
+    request_workflow,
+    ask_user,
+    stop_robot,
 ]
 
-# 薄路由可调用的工具：急停 + 子图委派。
-ROUTER_TOOLS = [stop_robot, *DELEGATION_TOOLS]
-
-# 灵活 Agent（create_agent + SummarizationMiddleware）可调用的轻量工具。
-FLEXIBLE_TOOLS = [get_robot_status, recognize_image]
+#: 只读工具；其结果会生成 observation_id 供 Workflow 请求引用。
+READ_ONLY_TOOLS = {get_robot_status.name, recognize_image.name}
 
 __all__ = [
-    "DELEGATION_TOOLS",
-    "FLEXIBLE_TOOLS",
-    "ROUTER_TOOLS",
-    "delegate_to_delete_location_workflow",
-    "delegate_to_follow_workflow",
-    "delegate_to_motion_workflow",
-    "delegate_to_navigation_workflow",
-    "delegate_to_save_location_workflow",
+    "AGENT_TOOLS",
+    "READ_ONLY_TOOLS",
+    "ask_user",
     "get_robot_status",
     "recognize_image",
+    "request_workflow",
     "stop_robot",
 ]

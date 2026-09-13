@@ -9,10 +9,18 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 import agent.workflows.follow.graph as follow_graph_module
+from agent.common.robot_gateway import RobotGatewayError
 from agent.workflows.follow.graph import build_follow_workflow
 from unit_tests.fakes import FailingRobotGateway, FakeRobotGateway
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def _fast_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """轮询间隔降到毫秒级，测试不等待真实时间。"""
+    monkeypatch.setenv("FOLLOW_POLL_INTERVAL", "0.005")
+    monkeypatch.setenv("FOLLOW_TIMEOUT_GRACE", "0.05")
 
 
 @pytest.fixture(autouse=True)
@@ -99,11 +107,12 @@ async def test_direct_hit_unconfirmed_moves_nothing() -> None:
     assert gateway.follow_submitted == []
 
 
-async def test_missing_target_lists_candidates_and_selection_is_confirmation() -> None:
+async def test_missing_target_selection_is_separate_from_execution_confirmation() -> (
+    None
+):
+    """候选选择只确定目标；开始执行必须再取得一次明确确认。"""
     gateway = FakeRobotGateway(
-        detections_script=[
-            _detected("person", "bottle"),
-        ],
+        detections_script=[_detected("person", "bottle")],
         submit_results=[_NATURAL_END],
     )
     app = _build_app(gateway)
@@ -115,12 +124,37 @@ async def test_missing_target_lists_candidates_and_selection_is_confirmation() -
     assert payload["empty"] is False
     assert [item["label"] for item in payload["candidates"]] == ["person", "bottle"]
     assert "未检测到" in payload["message"]
+    assert gateway.follow_submitted == []
 
-    result = await app.ainvoke(Command(resume={"answer": "2"}), config=config)
+    # 选中候选后只出现执行确认，不会直接开始跟随。
+    confirm = await app.ainvoke(Command(resume={"answer": "2"}), config=config)
+    confirm_payload = _interrupt_payload(confirm)
+    assert confirm_payload["type"] == "confirm_follow_target"
+    assert confirm_payload["target_label"] == "bottle"
+    assert confirm_payload["selected_from_list"] is True
+    assert gateway.follow_submitted == []
+    assert gateway.detections_calls == 1  # 选择不重新探测
+
+    result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
     assert result["follow_result"]["status"] == "success"
     assert result["follow_result"]["target_label"] == "bottle"
     assert gateway.follow_submitted[0]["target_label"] == "bottle"
-    assert gateway.detections_calls == 1  # 选择即确认，不再探测
+
+
+async def test_selection_cancel_at_execution_confirmation_submits_nothing() -> None:
+    gateway = FakeRobotGateway(
+        detections_script=[_detected("person", "bottle")],
+        submit_results=[_NATURAL_END],
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "follow-3b"}}
+
+    await app.ainvoke(_inputs("cup"), config=config)
+    await app.ainvoke(Command(resume={"answer": "1"}), config=config)
+    result = await app.ainvoke(Command(resume={"confirmed": False}), config=config)
+
+    assert result["follow_result"]["status"] == "cancelled"
+    assert gateway.follow_submitted == []
 
 
 async def test_selection_cancel_stops_workflow() -> None:
@@ -238,7 +272,8 @@ async def test_workflow_timeout_cancels_follow_task(
     assert gateway._follow_records["follow-follow-1"]["status"] == "CANCELLED"
 
 
-async def test_gateway_error_during_execution_reports_failure() -> None:
+async def test_gateway_error_during_execution_reports_execution_unknown() -> None:
+    """任务已提交但状态无法确认：报告状态未知并尽力取消，而不是普通失败。"""
     gateway = FailingRobotGateway(detections_script=[_detected("cup")])
     app = _build_app(gateway)
     config: dict[str, Any] = {"configurable": {"thread_id": "follow-11"}}
@@ -247,7 +282,63 @@ async def test_gateway_error_during_execution_reports_failure() -> None:
     _interrupt_payload(interrupted)
     result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
 
+    assert result["follow_result"]["status"] == "execution_unknown"
+    assert "状态未知" in result["follow_result"]["summary"]
+    assert len(gateway.follow_submitted) == 1  # 同一个 operation_id，没有重提
+
+
+async def test_selection_flow_then_execution_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """候选选择 + 确认后状态未知，同样收敛为 execution_unknown。"""
+    monkeypatch.setenv("FOLLOW_POLL_INTERVAL", "0.005")
+    gateway = FailingRobotGateway(detections_script=[_detected("person")])
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "follow-13"}}
+
+    await app.ainvoke(_inputs("cup"), config=config)
+    await app.ainvoke(Command(resume={"answer": "1"}), config=config)
+    result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
+
+    assert result["follow_result"]["status"] == "execution_unknown"
+
+
+async def test_lost_submit_response_recovers_existing_follow_task() -> None:
+    gateway = FakeRobotGateway(
+        detections_script=[_detected("cup")],
+        submit_errors=[RobotGatewayError("UNAVAILABLE", "响应丢失")],
+        preloaded_follows={
+            "follow-follow-1": {"operation_id": "follow-follow-1", "status": "STARTING"}
+        },
+        poll_scripts={"follow-follow-1": [dict(_NATURAL_END)]},
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "follow-14"}}
+
+    interrupted = await app.ainvoke(_inputs("cup"), config=config)
+    _interrupt_payload(interrupted)
+    result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
+
+    assert result["follow_result"]["status"] == "success"
+    assert gateway.follow_submitted == []  # 没有换新 ID 重新提交
+
+
+async def test_submit_without_follow_record_reports_clear_failure() -> None:
+    gateway = FakeRobotGateway(
+        detections_script=[_detected("cup")],
+        submit_errors=[RobotGatewayError("UNAVAILABLE", "响应丢失")],
+    )
+    app = _build_app(gateway)
+    config: dict[str, Any] = {"configurable": {"thread_id": "follow-15"}}
+
+    interrupted = await app.ainvoke(_inputs("cup"), config=config)
+    _interrupt_payload(interrupted)
+    result = await app.ainvoke(Command(resume={"confirmed": True}), config=config)
+
     assert result["follow_result"]["status"] == "failed"
+    observation = result["follow_result"]["final_observation"]
+    assert observation["error_code"] == "SUBMIT_NOT_FOUND"
+    assert gateway.follow_submitted == []
 
 
 async def test_invalid_input_is_rejected_before_probing() -> None:

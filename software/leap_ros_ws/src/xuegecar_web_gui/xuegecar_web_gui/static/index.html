@@ -4,14 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
-  <title>遥控</title>
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>雪哥小车遥控</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- 顶部状态栏 -->
+  <!-- 状态栏：竖屏在顶部通栏，横屏收进右侧控制栏顶部 -->
   <header id="status-bar">
     <div class="pills">
-      <span id="pill-conn" class="pill">未连接</span>
+      <span id="pill-conn" class="pill" role="status">未连接</span>
       <span id="pill-battery" class="pill">电池 --</span>
       <span id="pill-camera" class="pill">摄像头 --</span>
     </div>
@@ -21,11 +24,11 @@
     <!-- 摄像头 -->
     <section id="camera-card" class="card">
       <div class="camera-wrap">
-        <img id="camera" alt="摄像头画面">
+        <img id="camera" alt="摄像头画面" decoding="async">
         <div id="camera-placeholder">等待摄像头…</div>
       </div>
       <div class="camera-meta">
-        <span id="camera-fps">0.0 fps</span>
+        <span id="camera-fps">-- fps</span>
         <span id="speed-readout">下发 0.00 m/s · 0.00 rad/s</span>
       </div>
     </section>
@@ -34,10 +37,10 @@
       <!-- 驾驶控制区 -->
       <section id="control-card" class="card">
         <div class="sliders">
-          <label>线速度 <span><b id="linear-value">0.30</b> m/s</span>
+          <label for="linear-slider">线速度 <span><b id="linear-value">0.30</b> m/s</span>
             <input type="range" id="linear-slider" min="0" max="2" step="0.05" value="0.3">
           </label>
-          <label>角速度 <span><b id="angular-value">1.00</b> rad/s</span>
+          <label for="angular-slider">角速度 <span><b id="angular-value">1.00</b> rad/s</span>
             <input type="range" id="angular-slider" min="0" max="5" step="0.05" value="1.0">
           </label>
         </div>
@@ -58,15 +61,15 @@
       <!-- 安全控制区 -->
       <section id="safety-card" class="card">
         <div class="safety-title">安全控制</div>
-        <button type="button" id="btn-estop" class="btn-warn">急停锁</button>
-        <div class="safety-secondary">
+        <div class="safety-buttons">
+          <button type="button" id="btn-estop" class="btn-warn">急停锁</button>
           <button type="button" id="btn-unlock" class="btn-ghost">解锁</button>
         </div>
       </section>
     </div>
 
     <footer id="hint">
-      点击方向键持续行驶 · 中间“停止”停车 | 切后台或断线自动停车 | 仅允许一台设备控制
+      点击方向键持续行驶，“停止”停车 · 断线或切后台自动停车
     </footer>
   </main>
 

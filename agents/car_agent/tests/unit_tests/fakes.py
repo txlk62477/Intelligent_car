@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from agent.common.robot_gateway import RobotGatewayError
 
@@ -20,6 +23,11 @@ class FakeRobotGateway:
         snapshot_script: list[dict[str, Any]] | None = None,
         detections_script: list[dict[str, Any]] | None = None,
         navigation_status: dict[str, Any] | None = None,
+        submit_errors: list[RobotGatewayError] | None = None,
+        query_errors: list[RobotGatewayError] | None = None,
+        preloaded_motions: dict[str, dict[str, Any]] | None = None,
+        preloaded_follows: dict[str, dict[str, Any]] | None = None,
+        preloaded_navigations: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.submitted: list[dict[str, Any]] = []
         self.stop_calls = 0
@@ -29,9 +37,16 @@ class FakeRobotGateway:
         self._poll_scripts = {
             key: list(value) for key, value in (poll_scripts or {}).items()
         }
-        self._records: dict[str, dict[str, Any]] = {}
+        self._records: dict[str, dict[str, Any]] = {
+            key: dict(value) for key, value in (preloaded_motions or {}).items()
+        }
+        # 提交/查询的错误脚本：用于模拟“响应丢失”和“状态无法确认”。
+        self._submit_errors = list(submit_errors or [])
+        self._query_errors = list(query_errors or [])
         self.follow_submitted: list[dict[str, Any]] = []
-        self._follow_records: dict[str, dict[str, Any]] = {}
+        self._follow_records: dict[str, dict[str, Any]] = {
+            key: dict(value) for key, value in (preloaded_follows or {}).items()
+        }
         self._snapshot_script = list(snapshot_script or [])
         self._detections_script = list(detections_script or [])
         self.detections_calls = 0
@@ -43,7 +58,15 @@ class FakeRobotGateway:
             "pose": {"x": 1.0, "y": 2.0, "yaw": 0.5, "frame_id": "map"},
         }
         self.navigation_submitted: list[dict[str, Any]] = []
-        self._navigation_records: dict[str, dict[str, Any]] = {}
+        self._navigation_records: dict[str, dict[str, Any]] = {
+            key: dict(value) for key, value in (preloaded_navigations or {}).items()
+        }
+
+    @staticmethod
+    def _raise_scripted(queue: list[RobotGatewayError]) -> None:
+        """按脚本抛出一次 Gateway 异常，模拟通信失败。"""
+        if queue:
+            raise queue.pop(0)
 
     def get_status(self) -> dict[str, Any]:
         self.status_calls += 1
@@ -58,6 +81,7 @@ class FakeRobotGateway:
         """幂等提交：同一 operation_id 直接返回已有记录。"""
 
         operation_id = str(payload["operation_id"])
+        self._raise_scripted(self._submit_errors)
         previous = self._records.get(operation_id)
         if previous is not None:
             return previous
@@ -72,6 +96,7 @@ class FakeRobotGateway:
     def get_motion(self, operation_id: str) -> dict[str, Any]:
         """按脚本逐次推进状态，脚本耗尽后保持最后状态。"""
 
+        self._raise_scripted(self._query_errors)
         record = self._records.get(operation_id)
         if record is None:
             raise RobotGatewayError("NOT_FOUND", "未知 operation_id")
@@ -124,6 +149,7 @@ class FakeRobotGateway:
     def submit_follow(self, payload: dict[str, Any]) -> dict[str, Any]:
         """创建内存视觉跟随记录；可用 submit_results 脚本推入终态。"""
         operation_id = str(payload["operation_id"])
+        self._raise_scripted(self._submit_errors)
         previous = self._follow_records.get(operation_id)
         if previous is not None:
             return previous
@@ -141,6 +167,7 @@ class FakeRobotGateway:
 
     def get_follow(self, operation_id: str) -> dict[str, Any]:
         """查询内存视觉跟随记录；可用 poll_scripts 脚本逐次推进。"""
+        self._raise_scripted(self._query_errors)
         try:
             record = self._follow_records[operation_id]
         except KeyError as error:
@@ -184,6 +211,7 @@ class FakeRobotGateway:
 
     def submit_navigation(self, payload: dict[str, Any]) -> dict[str, Any]:
         operation_id = str(payload["operation_id"])
+        self._raise_scripted(self._submit_errors)
         previous = self._navigation_records.get(operation_id)
         if previous is not None:
             return previous
@@ -195,6 +223,7 @@ class FakeRobotGateway:
         return record
 
     def get_navigation(self, operation_id: str) -> dict[str, Any]:
+        self._raise_scripted(self._query_errors)
         try:
             record = self._navigation_records[operation_id]
         except KeyError as error:
@@ -222,15 +251,19 @@ class FailingRobotGateway(FakeRobotGateway):
         raise RobotGatewayError("UNAVAILABLE", "Robot Gateway 不可用")
 
 
-class FakeChatModel:
+class FakeChatModel(BaseChatModel):
     """按队列返回预置消息的可编程 Chat Model。"""
 
-    _llm_type = "fake-chat"
+    responses: list[BaseMessage] = Field(default_factory=list)
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+    bound_tools: list[Any] = Field(default_factory=list)
 
     def __init__(self, responses: list[BaseMessage] | None = None) -> None:
-        self._responses = list(responses or [])
-        self.calls: list[list[BaseMessage]] = []
-        self.bound_tools: list[Any] = []
+        super().__init__(responses=list(responses or []))
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat"
 
     def bind_tools(
         self,
@@ -239,21 +272,35 @@ class FakeChatModel:
         parallel_tool_calls: bool = False,
         tool_choice: Any = None,
         **kwargs: Any,
-    ) -> FakeChatModel:
+    ) -> Any:
         self.bound_tools = list(tools)
-        return self
+        return self.bind(
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
 
     def with_retry(self, *args: Any, **kwargs: Any) -> FakeChatModel:
         """SummarizationMiddleware 会包装摘要模型；测试用返回自身即可。"""
         return self
 
-    async def ainvoke(
-        self, messages: list[BaseMessage], config: Any = None, **kwargs: Any
-    ) -> BaseMessage:
+    def _next(self, messages: list[BaseMessage]) -> BaseMessage:
         self.calls.append(list(messages))
-        if not self._responses:
+        if not self.responses:
             return AIMessage(content="（没有更多预设回复）")
-        return self._responses.pop(0)
+        return self.responses.pop(0)
+
+    def _generate(
+        self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+    ) -> ChatResult:
+        del stop, kwargs
+        return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
+
+    async def _agenerate(
+        self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+    ) -> ChatResult:
+        return self._generate(messages, stop=stop, **kwargs)
 
 
 def tool_call_ai(name: str, args: dict[str, Any], call_id: str = "call-1") -> AIMessage:

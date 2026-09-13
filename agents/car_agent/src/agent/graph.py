@@ -9,7 +9,7 @@ from langchain_deepseek import ChatDeepSeek
 
 from agent.supervisor.graph import (
     FLEXIBLE_AGENT_PROMPT,
-    ROUTER_PROMPT,
+    TERMINAL_EXPLANATION_PROMPT,
     build_car_agent_graph,
 )
 
@@ -33,4 +33,9 @@ def build_chat_model() -> ChatDeepSeek:
 
 graph = build_car_agent_graph(model_factory=build_chat_model)
 
-__all__ = ["FLEXIBLE_AGENT_PROMPT", "ROUTER_PROMPT", "build_chat_model", "graph"]
+__all__ = [
+    "FLEXIBLE_AGENT_PROMPT",
+    "TERMINAL_EXPLANATION_PROMPT",
+    "build_chat_model",
+    "graph",
+]
